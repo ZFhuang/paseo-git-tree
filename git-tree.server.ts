@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitDetail, commitDiff, gitTree } from "./git-tree.shared";
+import { commitDetail, commitDiff, gitBranchOp, gitTree } from "./git-tree.shared";
 
 type Input = ZodOutput<typeof gitTree.input>;
 type Row = ZodOutput<typeof gitTree.output>["rows"][number];
@@ -231,29 +231,50 @@ export async function getCommitDetail(
       runGit(directory, ["diff", "--name-status", base, hash]).catch(() => ""),
     ]);
 
+/**
+ * `git diff --numstat` reports a rename as `old => new` or the brace form
+ * `pre/{old => new}post`. Normalize both to the destination path so the
+ * stat key matches the `--name-status` key (which is the new path).
+ */
+function normalizeNumstatPath(raw: string): string {
+  if (raw.includes("=>")) {
+    // `pre/{old => new}post` (empty sides allowed: `src/{ => a.ts}`)
+    const brace = /^(.*)\{(.*) => (.*)\}(.*)$/.exec(raw);
+    if (brace) return `${brace[1]}${brace[3]}${brace[4]}`;
+    const arrow = /^(.*) => (.*)$/.exec(raw);
+    if (arrow) return arrow[2];
+  }
+  return raw;
+}
+
     const statByPath = new Map<string, { additions: number; deletions: number }>();
     for (const line of stats.split("\n")) {
       if (!line.trim()) continue;
       const [a = "0", d = "0", ...p] = line.split("\t");
-      const filePath = p.join("\t");
+      const filePath = normalizeNumstatPath(p.join("\t"));
       statByPath.set(filePath, {
         additions: a === "-" ? 0 : Number.parseInt(a, 10) || 0,
         deletions: d === "-" ? 0 : Number.parseInt(d, 10) || 0,
       });
     }
     const statusByPath = new Map<string, string>();
+    const oldPathByPath = new Map<string, string>();
     for (const line of statuses.split("\n")) {
       if (!line.trim()) continue;
       const parts = line.split("\t");
       const status = (parts[0] ?? "").charAt(0);
       const filePath = parts.length > 2 ? parts[2] : parts[1];
-      if (filePath) statusByPath.set(filePath, status);
+      if (filePath) {
+        statusByPath.set(filePath, status);
+        if (parts.length > 2) oldPathByPath.set(filePath, parts[1]);
+      }
     }
 
     const files = [...new Set([...statByPath.keys(), ...statusByPath.keys()])]
       .sort()
       .map((filePath) => ({
         path: filePath,
+        oldPath: oldPathByPath.get(filePath) ?? null,
         status: statusByPath.get(filePath) ?? "M",
         additions: statByPath.get(filePath)?.additions ?? 0,
         deletions: statByPath.get(filePath)?.deletions ?? 0,
@@ -297,5 +318,69 @@ export async function getCommitDiff(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { patch: "", error: message };
+  }
+}
+
+/**
+ * Git refname rules are extensive; this rejects the cases that are either
+ * invalid or would be parsed as flags / path tricks when passed as an argv item.
+ */
+function assertBranchName(name: string): string {
+  const n = name.trim();
+  if (!n) throw new Error("Branch name is empty");
+  if (n === "HEAD" || n === "@") throw new Error("Invalid branch name");
+  if (n.startsWith("-") || n.startsWith("/") || n.endsWith("/") || n.endsWith(".") || n.endsWith(".lock")) {
+    throw new Error("Invalid branch name");
+  }
+  if (n.includes("..") || n.includes("//") || n.includes("@{") || n.includes("\\")) {
+    throw new Error("Invalid branch name");
+  }
+  if (/[\s~^:?*\[\x00-\x1f]/.test(n)) throw new Error("Invalid branch name");
+  return n;
+}
+
+async function currentBranchName(directory: string): Promise<string> {
+  const out = await runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return firstLine(out).trim();
+}
+
+export async function runBranchOp(
+  input: ZodOutput<typeof gitBranchOp.input>,
+): Promise<ZodOutput<typeof gitBranchOp.output>> {
+  const directory = path.resolve(input.directory);
+  try {
+    switch (input.op) {
+      case "pull":
+        await runGit(directory, ["pull"], 60_000);
+        break;
+      case "checkout": {
+        const name = assertBranchName(input.name ?? "");
+        await runGit(directory, ["checkout", name]);
+        break;
+      }
+      case "merge": {
+        const name = assertBranchName(input.name ?? "");
+        const current = await currentBranchName(directory);
+        if (name === current) throw new Error("Already on this branch");
+        await runGit(directory, ["merge", "--no-edit", name], 60_000);
+        break;
+      }
+      case "delete": {
+        const name = assertBranchName(input.name ?? "");
+        const current = await currentBranchName(directory);
+        if (name === current) throw new Error("Cannot delete the current branch");
+        await runGit(directory, ["branch", "-d", name]);
+        break;
+      }
+      case "create": {
+        const name = assertBranchName(input.name ?? "");
+        await runGit(directory, ["checkout", "-b", name]);
+        break;
+      }
+    }
+    return { error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: firstLine(message) || message };
   }
 }

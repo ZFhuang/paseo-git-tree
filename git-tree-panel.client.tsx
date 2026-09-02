@@ -1,13 +1,15 @@
 import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin";
 import { Icon, useToast } from "@getpaseo/plugin/react-native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   commitDetail,
   commitDiff,
+  gitBranchOp,
   gitTree,
   type CommitDetailOutput,
   type CommitDiffOutput,
+  type GitBranchOp,
   type GitTreeOutput,
   type GitTreeRow,
 } from "./git-tree.shared";
@@ -68,6 +70,24 @@ const LANE_COLORS = [
 
 function laneColor(lane: number): string {
   return LANE_COLORS[lane % LANE_COLORS.length];
+}
+
+/** Stable FNV-1a so each branch name maps to a distinct palette slot. */
+function hashString(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function branchColor(name: string): string {
+  return LANE_COLORS[hashString(name) % LANE_COLORS.length];
+}
+
+function withAlpha(hex: string, alpha: string): string {
+  return hex.length === 7 ? hex + alpha : hex;
 }
 
 const FLOAT_SHADOW = {
@@ -436,6 +456,299 @@ function CommitMenu({
   );
 }
 
+type BranchHead = { name: string; hash: string; isCurrent: boolean };
+
+function BranchNameRow({
+  name,
+  color,
+  isCurrent,
+  open,
+  colors,
+  onPress,
+  children,
+}: {
+  name: string;
+  color: string;
+  isCurrent: boolean;
+  open: boolean;
+  colors: FloatColors;
+  onPress: () => void;
+  children: React.ReactNode;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <View>
+      <Pressable
+        onPress={onPress}
+        onHoverIn={() => setHovered(true)}
+        onHoverOut={() => setHovered(false)}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          backgroundColor: open || hovered ? colors.hover : "transparent",
+        }}
+      >
+        <View
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 4,
+            backgroundColor: color,
+          }}
+        />
+        <Text
+          numberOfLines={1}
+          style={{
+            color: colors.fg,
+            fontSize: 12,
+            fontWeight: isCurrent ? "700" : "500",
+            flex: 1,
+            flexShrink: 1,
+          }}
+        >
+          {name}
+        </Text>
+        {isCurrent ? (
+          <Text style={{ color, fontSize: 10, fontWeight: "700" }}>current</Text>
+        ) : null}
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={12} color={colors.fgMuted} />
+      </Pressable>
+      {children}
+    </View>
+  );
+}
+
+function BranchAction({
+  label,
+  hint,
+  colors,
+  danger,
+  disabled,
+  onPress,
+}: {
+  label: string;
+  hint?: string;
+  colors: FloatColors;
+  danger?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Pressable
+      onPress={disabled ? undefined : onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      style={{
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        marginHorizontal: 3,
+        borderRadius: 6,
+        backgroundColor: hovered && !disabled ? colors.hover : "transparent",
+        opacity: disabled ? 0.45 : 1,
+        gap: 1,
+      }}
+    >
+      <Text style={{ color: danger ? "#f06292" : colors.fg, fontSize: 12 }}>{label}</Text>
+      {hint ? (
+        <Text numberOfLines={1} style={{ color: colors.fgMuted, fontSize: 10, fontFamily: "monospace" }}>
+          {hint}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function BranchMenu({
+  x,
+  y,
+  heads,
+  colors,
+  busy,
+  onDismiss,
+  onOp,
+}: {
+  x: number;
+  y: number;
+  heads: BranchHead[];
+  colors: FloatColors;
+  busy: boolean;
+  onDismiss: () => void;
+  onOp: (op: GitBranchOp | "copy", name?: string) => void;
+}) {
+  const current = heads.find((h) => h.isCurrent);
+  const sorted = useMemo(() => {
+    const rest = heads.filter((h) => !h.isCurrent).slice().sort((a, b) => a.name.localeCompare(b.name));
+    return current ? [current, ...rest] : rest;
+  }, [heads, current]);
+
+  const [openName, setOpenName] = useState<string | null>(current?.name ?? null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  return (
+    <>
+      <Pressable
+        onPress={onDismiss}
+        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          width: 260,
+          maxHeight: 360,
+          zIndex: 42,
+          backgroundColor: colors.surface,
+          borderRadius: CARD_RADIUS,
+          borderWidth: 1,
+          borderColor: colors.ring,
+          paddingVertical: 4,
+          ...FLOAT_SHADOW,
+        }}
+      >
+        <ScrollView nestedScrollEnabled>
+          <Pressable
+            onPress={() => {
+              setCreating((v) => !v);
+              setOpenName(null);
+              setConfirmDelete(null);
+            }}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+            }}
+          >
+            <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>+ New branch</Text>
+          </Pressable>
+          {creating ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingBottom: 8 }}>
+              <TextInput
+                value={newName}
+                onChangeText={setNewName}
+                placeholder="branch-name"
+                placeholderTextColor={colors.fgMuted}
+                autoFocus
+                editable={!busy}
+                onSubmitEditing={() => {
+                  const n = newName.trim();
+                  if (n) onOp("create", n);
+                }}
+                style={{
+                  flex: 1,
+                  color: colors.fg,
+                  fontSize: 12,
+                  paddingHorizontal: 8,
+                  paddingVertical: 6,
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: colors.ring,
+                  backgroundColor: "rgba(0,0,0,0.18)",
+                }}
+              />
+              <Pressable
+                onPress={() => {
+                  const n = newName.trim();
+                  if (n) onOp("create", n);
+                }}
+                disabled={busy || !newName.trim()}
+                style={{
+                  paddingHorizontal: 8,
+                  paddingVertical: 6,
+                  borderRadius: 6,
+                  backgroundColor: colors.hover,
+                  opacity: busy || !newName.trim() ? 0.45 : 1,
+                }}
+              >
+                <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Create</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          {sorted.map((h) => {
+            const color = branchColor(h.name);
+            const open = openName === h.name;
+            return (
+              <BranchNameRow
+                key={h.name}
+                name={h.name}
+                color={color}
+                isCurrent={h.isCurrent}
+                open={open}
+                colors={colors}
+                onPress={() => {
+                  setOpenName(open ? null : h.name);
+                  setConfirmDelete(null);
+                  setCreating(false);
+                }}
+              >
+                {open ? (
+                  <View style={{ paddingBottom: 4 }}>
+                    {h.isCurrent ? (
+                      <BranchAction
+                        label="Pull"
+                        hint="git pull"
+                        colors={colors}
+                        disabled={busy}
+                        onPress={() => onOp("pull")}
+                      />
+                    ) : (
+                      <>
+                        <BranchAction
+                          label="Checkout"
+                          hint={`git checkout ${h.name}`}
+                          colors={colors}
+                          disabled={busy}
+                          onPress={() => onOp("checkout", h.name)}
+                        />
+                        <BranchAction
+                          label={current ? `Merge into ${current.name}` : "Merge"}
+                          hint={`git merge ${h.name}`}
+                          colors={colors}
+                          disabled={busy}
+                          onPress={() => onOp("merge", h.name)}
+                        />
+                      </>
+                    )}
+                    <BranchAction
+                      label="Copy name"
+                      hint={h.name}
+                      colors={colors}
+                      disabled={busy}
+                      onPress={() => onOp("copy", h.name)}
+                    />
+                    {!h.isCurrent ? (
+                      <BranchAction
+                        label={confirmDelete === h.name ? "Confirm delete" : "Delete branch"}
+                        hint={confirmDelete === h.name ? "git branch -d  ·  cannot be undone" : `git branch -d ${h.name}`}
+                        colors={colors}
+                        danger
+                        disabled={busy}
+                        onPress={() => {
+                          if (confirmDelete === h.name) onOp("delete", h.name);
+                          else setConfirmDelete(h.name);
+                        }}
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
+              </BranchNameRow>
+            );
+          })}
+        </ScrollView>
+      </View>
+    </>
+  );
+}
+
 // --- Diff rendering -----------------------------------------------------------
 
 function DiffLine({
@@ -544,9 +857,22 @@ function FileRow({
   colors: { fg: string; fgMuted: string; added: string; removed: string; border: string; accent: string; hoverBg: string };
   onToggle: () => void;
 }) {
-  const statusLabel = file.status === "A" ? "A" : file.status === "D" ? "D" : "M";
+  const statusLabel =
+    file.status === "A" || file.status === "C"
+      ? "A"
+      : file.status === "D"
+        ? "D"
+        : file.status === "R"
+          ? "R"
+          : "M";
   const statusColor =
-    file.status === "A" ? colors.added : file.status === "D" ? colors.removed : colors.fgMuted;
+    file.status === "A" || file.status === "C"
+      ? colors.added
+      : file.status === "D"
+        ? colors.removed
+        : file.status === "R"
+          ? colors.accent
+          : colors.fgMuted;
   const [hovered, setHovered] = useState(false);
   return (
     <Pressable
@@ -576,6 +902,12 @@ function FileRow({
         <Text style={{ color: statusColor, fontSize: 10, fontWeight: "700" }}>{statusLabel}</Text>
       </View>
       <Text numberOfLines={1} style={{ color: colors.fg, fontSize: 12, flex: 1, flexShrink: 1 }}>
+        {file.status === "R" && file.oldPath ? (
+          <Text style={{ color: colors.fgMuted, fontSize: 12 }}>
+            {file.oldPath}
+            <Text style={{ color: colors.fgMuted }}> ⟶ </Text>
+          </Text>
+        ) : null}
         {file.path}
       </Text>
       <Text style={{ color: colors.added, fontSize: 11, fontFamily: "monospace" }}>+{file.additions}</Text>
@@ -840,9 +1172,13 @@ const CommitRow = memo(function CommitRow({
   );
 
   const headRef = row.refs.find((r) => r.startsWith("HEAD ->"));
+  const headBranch = headRef ? headRef.slice("HEAD -> ".length) : null;
   const branchRefs = row.refs.filter(
     (r) => !r.startsWith("HEAD ->") && r !== "HEAD" && !r.startsWith("tag:"),
   );
+  const shownBranches = headBranch
+    ? [headBranch, ...branchRefs.filter((r) => r !== headBranch)]
+    : branchRefs;
   const tags = row.refs.filter((r) => r.startsWith("tag:")).map((t) => t.slice(5));
   const isHead = headRef !== undefined || row.refs.includes("HEAD");
   const [hovered, setHovered] = useState(false);
@@ -921,23 +1257,29 @@ const CommitRow = memo(function CommitRow({
       >
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            {branchRefs.slice(0, 2).map((ref) => (
-              <View
-                key={ref}
-                style={{
-                  backgroundColor: isHead ? colors.success + "33" : colors.chipBg,
-                  borderRadius: 4,
-                  paddingHorizontal: 5,
-                  paddingVertical: 1,
-                  borderWidth: 1,
-                  borderColor: isHead ? colors.success + "66" : colors.ring,
-                }}
-              >
-                <Text numberOfLines={1} style={{ fontSize: 10, color: colors.fg, fontWeight: isHead ? "600" : "500" }}>
-                  {ref}
-                </Text>
-              </View>
-            ))}
+            {shownBranches.slice(0, 2).map((ref) => {
+              const tint = branchColor(ref);
+              return (
+                <View
+                  key={ref}
+                  style={{
+                    backgroundColor: withAlpha(tint, "28"),
+                    borderRadius: 4,
+                    paddingHorizontal: 5,
+                    paddingVertical: 1,
+                    borderWidth: 1,
+                    borderColor: withAlpha(tint, "99"),
+                  }}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={{ fontSize: 10, color: tint, fontWeight: headBranch === ref ? "700" : "500" }}
+                  >
+                    {ref}
+                  </Text>
+                </View>
+              );
+            })}
             {tags.slice(0, 1).map((tag) => (
               <View
                 key={tag}
@@ -1219,8 +1561,10 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     projectKind: w.projectKind,
   }));
   const getTree = useRpc(gitTree);
+  const runBranch = useRpc(gitBranchOp);
   const toast = useToast();
   const shellRef = useRef<View>(null);
+  const branchTriggerRef = useRef<View>(null);
 
   const directory = workspace?.directory ?? null;
   const [data, setData] = useState<GitTreeOutput | null>(null);
@@ -1229,8 +1573,11 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
+  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number } | null>(null);
+  const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
   const [refreshHover, setRefreshHover] = useState(false);
+  const [branchHover, setBranchHover] = useState(false);
 
   const refresh = useCallback(() => {
     if (!directory) return;
@@ -1271,12 +1618,14 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     menuOpen.current = false;
     setTip(null);
     setMenu(null);
+    setBranchMenu(null);
   }, []);
 
   const handleOpenMenu = useCallback(
     (row: GitTreeRow, pageX: number, pageY: number) => {
       menuOpen.current = true;
       setTip(null);
+      setBranchMenu(null);
       placeAt(pageX, pageY, 208, 92, (x, y) => setMenu({ x, y, row }));
     },
     [placeAt],
@@ -1284,13 +1633,63 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
 
   const handleShowTip = useCallback(
     (row: GitTreeRow, pageX: number, pageY: number) => {
-      if (menuOpen.current) return;
+      if (menuOpen.current || branchMenu) return;
       placeAt(pageX, pageY, 308, 88, (x, y) => setTip({ x, y, row }));
     },
-    [placeAt],
+    [placeAt, branchMenu],
   );
 
   const handleHideTip = useCallback(() => setTip(null), []);
+
+  const openBranchMenu = useCallback(() => {
+    if (branchMenu) return;
+    menuOpen.current = false;
+    setMenu(null);
+    setTip(null);
+    const node = branchTriggerRef.current;
+    if (!node || typeof node.measureInWindow !== "function") {
+      setBranchMenu({ x: 8, y: 40 });
+      return;
+    }
+    node.measureInWindow((x, y, _w, h) => {
+      placeAt(x, y + h + 6, 268, 320, (lx, ly) => setBranchMenu({ x: lx, y: ly }));
+    });
+  }, [branchMenu, placeAt]);
+
+  const handleBranchOp = useCallback(
+    (op: GitBranchOp | "copy", name?: string) => {
+      if (op === "copy") {
+        if (!name) return;
+        void copyToClipboard(name).then((ok) => {
+          if (ok) toast.show("Copied branch name");
+          else toast.error("Couldn't copy");
+        });
+        return;
+      }
+      if (!directory || branchBusy) return;
+      setBranchBusy(true);
+      void runBranch({ directory, op, name })
+        .then((result) => {
+          if (result.error) {
+            toast.error(result.error);
+            return;
+          }
+          const done: Record<GitBranchOp, string> = {
+            checkout: name ? `Switched to ${name}` : "Checked out",
+            merge: name ? `Merged ${name}` : "Merged",
+            delete: name ? `Deleted ${name}` : "Deleted",
+            pull: "Pulled",
+            create: name ? `Created ${name}` : "Created branch",
+          };
+          toast.show(done[op]);
+          refresh();
+          if (op !== "delete") setBranchMenu(null);
+        })
+        .catch(() => toast.error("Git operation failed"))
+        .finally(() => setBranchBusy(false));
+    },
+    [directory, branchBusy, runBranch, toast, refresh],
+  );
 
   const colors: RowColors = useMemo(
     () => ({
@@ -1354,32 +1753,6 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         textAlign: "center" as const,
       },
       errorText: { color: theme.colors.statusDanger, fontSize: 12, textAlign: "center" as const },
-      headsWrap: {
-        paddingHorizontal: layout.compact ? 10 : 14,
-        paddingVertical: 8,
-        gap: 6,
-        flexWrap: "wrap" as const,
-        flexDirection: "row" as const,
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border + "66",
-      },
-      headChip: {
-        flexDirection: "row" as const,
-        alignItems: "center" as const,
-        gap: 5,
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: 999,
-        backgroundColor: theme.colors.surface1,
-        borderWidth: 1,
-        borderColor: theme.colors.border + "40",
-      },
-      headChipCurrent: {
-        backgroundColor: theme.colors.surface2,
-        borderColor: theme.colors.statusSuccess + "88",
-      },
-      headChipText: { fontSize: 10, color: theme.colors.foregroundMuted },
-      headChipTextCurrent: { color: theme.colors.foreground, fontWeight: "600" as const },
     }),
     [theme, layout.compact],
   );
@@ -1397,11 +1770,14 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const rows = data?.rows ?? [];
   const graphW = graphWidth(laneCountOf(rows));
   const heads = data?.heads ?? [];
+  const currentHead = heads.find((h) => h.isCurrent);
+  const triggerName = currentHead?.name ?? (heads.length > 0 ? "HEAD" : null);
+  const triggerColor = currentHead ? branchColor(currentHead.name) : theme.colors.foregroundMuted;
 
   return (
     <View ref={shellRef} style={styles.screen}>
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
           <Text style={styles.title}>Git Tree</Text>
           {rows.length > 0 ? (
             <Text style={styles.subtitle}>
@@ -1409,6 +1785,50 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             </Text>
           ) : null}
         </View>
+        {triggerName ? (
+          <View ref={branchTriggerRef} style={{ flexShrink: 1, minWidth: 0, marginRight: 4 }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={openBranchMenu}
+              onHoverIn={() => setBranchHover(true)}
+              onHoverOut={() => setBranchHover(false)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                maxWidth: layout.compact ? 140 : 200,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 999,
+                backgroundColor: branchHover || branchMenu ? withAlpha(triggerColor, "33") : withAlpha(triggerColor, "22"),
+                borderWidth: 1,
+                borderColor: withAlpha(triggerColor, "99"),
+              }}
+            >
+              <View
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: triggerColor,
+                  flexShrink: 0,
+                }}
+              />
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: theme.colors.foreground,
+                  fontSize: 12,
+                  fontWeight: "600",
+                  flexShrink: 1,
+                }}
+              >
+                {triggerName}
+              </Text>
+              <Icon name="ChevronDown" size={12} color={triggerColor} />
+            </Pressable>
+          </View>
+        ) : null}
         <Pressable
           accessibilityRole="button"
           onPress={refresh}
@@ -1428,35 +1848,6 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           />
         </Pressable>
       </View>
-
-      {heads.length > 0 ? (
-        (() => {
-          const current = heads.find((h) => h.isCurrent);
-          const others = heads.filter((h) => !h.isCurrent).slice(0, 5);
-          const remaining = heads.length - 1 - others.length;
-          return (
-            <View style={styles.headsWrap}>
-              {current ? (
-                <View key={current.name} style={[styles.headChip, styles.headChipCurrent]}>
-                  <Icon name="CircleDot" size={10} color={theme.colors.statusSuccess} />
-                  <Text style={[styles.headChipText, styles.headChipTextCurrent]}>{current.name}</Text>
-                </View>
-              ) : null}
-              {others.map((h) => (
-                <View key={h.name} style={styles.headChip}>
-                  <Icon name="GitBranch" size={10} color={theme.colors.foregroundMuted} />
-                  <Text style={styles.headChipText}>{h.name}</Text>
-                </View>
-              ))}
-              {remaining > 0 ? (
-                <View key="__more" style={styles.headChip}>
-                  <Text style={styles.headChipText}>+{remaining} more</Text>
-                </View>
-              ) : null}
-            </View>
-          );
-        })()
-      ) : null}
 
       {data?.error ? (
         <View style={styles.empty}>
@@ -1487,7 +1878,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         />
       )}
 
-      {tip && !menu ? <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} /> : null}
+      {tip && !menu && !branchMenu ? <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} /> : null}
       {menu ? (
         <CommitMenu
           x={menu.x}
@@ -1508,6 +1899,17 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
               else toast.error("Couldn't copy");
             });
           }}
+        />
+      ) : null}
+      {branchMenu ? (
+        <BranchMenu
+          x={branchMenu.x}
+          y={branchMenu.y}
+          heads={heads}
+          colors={floatColors}
+          busy={branchBusy}
+          onDismiss={() => setBranchMenu(null)}
+          onOp={handleBranchOp}
         />
       ) : null}
     </View>

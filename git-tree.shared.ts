@@ -70,6 +70,8 @@ export const commitDetail = defineRpc({
     files: z.array(
       z.object({
         path: z.string(),
+        /** Path before a rename; null for non-renames. */
+        oldPath: z.string().nullable(),
         status: z.string(),
         additions: z.number().int(),
         deletions: z.number().int(),
@@ -96,3 +98,22 @@ export const commitDiff = defineRpc({
 });
 
 export type CommitDiffOutput = z.output<typeof commitDiff.output>;
+
+const branchOp = z.enum(["checkout", "merge", "delete", "pull", "create"]);
+
+/** Mutating git branch operations for the header dropdown. */
+export const gitBranchOp = defineRpc({
+  name: "gittree.branch",
+  input: z.object({
+    directory: z.string().min(1),
+    op: branchOp,
+    /** Target / new branch name. Required for every op except `pull`. */
+    name: z.string().optional(),
+  }),
+  output: z.object({
+    error: z.string().nullable(),
+  }),
+});
+
+export type GitBranchOp = z.infer<typeof branchOp>;
+export type GitBranchOpOutput = z.output<typeof gitBranchOp.output>;
