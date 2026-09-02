@@ -1,0 +1,18 @@
+{
+  "name": "paseo-git-tree",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Git branch tree sidebar plugin for Paseo",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "*",
+    "@tanstack/react-query": "*",
+    "@types/react": "19.1",
+    "react": "19.1.0",
+    "react-native": "0.81.4",
+    "typescript": "^5.6.0",
+    "zod": "*"
+  }
+}
