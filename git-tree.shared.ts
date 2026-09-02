@@ -33,7 +33,7 @@ export const gitTree = defineRpc({
   name: "gittree.get",
   input: z.object({
     directory: z.string().min(1),
-    limit: z.number().int().positive().max(2000).default(300),
+    limit: z.number().int().positive().max(5000).default(2000),
   }),
   output: z.object({
     rows: z.array(rowSchema),

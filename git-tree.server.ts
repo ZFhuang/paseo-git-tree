@@ -156,13 +156,11 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
   try {
     // %x1e record / %x1f field separators: hash, parents, author, date, refs, subject.
     const fmt = "%x1e%H%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s%x1e";
-    const out = await runGit(directory, [
-      "log",
-      "--all",
-      "--topo-order",
-      `--pretty=format:${fmt}`,
-      `-n${limit}`,
-    ]);
+    const out = await runGit(
+      directory,
+      ["log", "--all", "--topo-order", `--pretty=format:${fmt}`, `-n${limit}`],
+      30_000,
+    );
 
     const commits: Parameters<typeof computeGraph>[0] = [];
     for (const rawLine of out.split("\n")) {

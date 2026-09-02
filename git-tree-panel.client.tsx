@@ -1,6 +1,6 @@
 import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin";
 import { Icon, useToast } from "@getpaseo/plugin/react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import {
   commitDetail,
@@ -25,6 +25,12 @@ const LINE_W = 2;
 const GRAPH_PAD_X = 8;
 /** Breathing room between the last lane and the commit text. */
 const GRAPH_PAD_RIGHT = 6;
+/** Collapsed row: header + card border + inter-card gap. */
+const COLLAPSED_ROW_H = ROW_HEIGHT + CARD_BORDER * 2 + CARD_GAP;
+const LIST_OVERSCAN = 18;
+const LIST_PAD_Y = 8;
+const LIST_PAD_X = 8;
+const COMMIT_LIMIT = 2000;
 
 function laneX(lane: number): number {
   return GRAPH_PAD_X + lane * LANE_WIDTH;
@@ -774,9 +780,23 @@ function CommitExpansion({
 
 // --- Commit list row -----------------------------------------------------------
 
-function CommitRow({
+type RowColors = {
+  fg: string;
+  fgMuted: string;
+  success: string;
+  chipBg: string;
+  selected: string;
+  hoverBg: string;
+  expandedBg: string;
+  hairline: string;
+  ring: string;
+  cardBg: string;
+};
+
+const CommitRow = memo(function CommitRow({
   row,
   prevRow,
+  index,
   graphW,
   colors,
   compact,
@@ -789,36 +809,28 @@ function CommitRow({
   onOpenMenu,
   onShowTip,
   onHideTip,
+  onHeight,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
+  index: number;
   graphW: number;
-  colors: {
-    fg: string;
-    fgMuted: string;
-    success: string;
-    chipBg: string;
-    selected: string;
-    hoverBg: string;
-    expandedBg: string;
-    hairline: string;
-    ring: string;
-    cardBg: string;
-  };
+  colors: RowColors;
   compact: boolean;
   expanded: boolean;
   expandedFile: string | null;
-  onToggle: () => void;
+  onToggle: (hash: string) => void;
   onToggleFile: (path: string) => void;
   directory: string;
   theme: PluginWorkspacePanelProps["theme"];
-  onOpenMenu: (pageX: number, pageY: number) => void;
-  onShowTip: (pageX: number, pageY: number) => void;
+  onOpenMenu: (row: GitTreeRow, pageX: number, pageY: number) => void;
+  onShowTip: (row: GitTreeRow, pageX: number, pageY: number) => void;
   onHideTip: () => void;
+  onHeight: (index: number, height: number) => void;
 }) {
   const cardRef = useRef<View>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [sliceH, setSliceH] = useState(ROW_HEIGHT + CARD_BORDER * 2 + CARD_GAP);
+  const [sliceH, setSliceH] = useState(COLLAPSED_ROW_H);
 
   useEffect(
     () => () => {
@@ -848,7 +860,7 @@ function CommitRow({
     clearTipTimer();
     tipTimer.current = setTimeout(() => {
       cardRef.current?.measureInWindow((x, y, w, h) => {
-        onShowTip(x + Math.min(w * 0.35, 140), y + h + 6);
+        onShowTip(row, x + Math.min(w * 0.35, 140), y + h + 6);
       });
     }, 380);
   };
@@ -856,14 +868,16 @@ function CommitRow({
   const openMenu = (pageX: number, pageY: number) => {
     clearTipTimer();
     onHideTip();
-    onOpenMenu(pageX, pageY);
+    onOpenMenu(row, pageX, pageY);
   };
 
   return (
     <View
       onLayout={(e) => {
         const h = e.nativeEvent.layout.height;
-        if (h > 0) setSliceH(h);
+        if (h <= 0) return;
+        setSliceH(h);
+        onHeight(index, h);
       }}
       style={{ overflow: "visible" }}
     >
@@ -879,7 +893,7 @@ function CommitRow({
         }}
       >
       <Pressable
-        onPress={onToggle}
+        onPress={() => onToggle(row.hash)}
         onHoverIn={() => {
           setHovered(true);
           scheduleTip();
@@ -1001,6 +1015,199 @@ function CommitRow({
       <GraphSlice row={row} prevRow={prevRow} height={sliceH} graphW={graphW} />
     </View>
   );
+});
+
+// --- Windowed list -------------------------------------------------------------
+
+function itemOffset(
+  index: number,
+  collapsedH: number,
+  expandedIndex: number,
+  expandedH: number,
+): number {
+  const base = LIST_PAD_Y + index * collapsedH;
+  if (expandedIndex >= 0 && index > expandedIndex) return base + (expandedH - collapsedH);
+  return base;
+}
+
+function indexAtY(
+  y: number,
+  count: number,
+  collapsedH: number,
+  expandedIndex: number,
+  expandedH: number,
+): number {
+  if (count <= 0) return 0;
+  if (y <= 0) return 0;
+  const last = count - 1;
+  if (expandedIndex < 0) return Math.min(last, Math.floor(y / collapsedH));
+  const top = expandedIndex * collapsedH;
+  if (y < top) return Math.min(expandedIndex, Math.floor(y / collapsedH));
+  if (y < top + expandedH) return expandedIndex;
+  return Math.min(last, expandedIndex + 1 + Math.floor((y - top - expandedH) / collapsedH));
+}
+
+function windowRange(
+  scrollY: number,
+  viewportH: number,
+  count: number,
+  collapsedH: number,
+  expandedIndex: number,
+  expandedH: number,
+): { start: number; end: number } {
+  if (count === 0) return { start: 0, end: 0 };
+  const vh = viewportH > 0 ? viewportH : collapsedH * 24;
+  const localY = scrollY - LIST_PAD_Y;
+  const start = Math.max(0, indexAtY(localY, count, collapsedH, expandedIndex, expandedH) - LIST_OVERSCAN);
+  const end = Math.min(
+    count,
+    indexAtY(localY + vh, count, collapsedH, expandedIndex, expandedH) + LIST_OVERSCAN + 1,
+  );
+  return { start, end: Math.max(end, start) };
+}
+
+function VirtualCommitList({
+  rows,
+  graphW,
+  colors,
+  compact,
+  expandedHash,
+  expandedFile,
+  directory,
+  theme,
+  onToggle,
+  onToggleFile,
+  onOpenMenu,
+  onShowTip,
+  onHideTip,
+  onScrollDismiss,
+}: {
+  rows: GitTreeRow[];
+  graphW: number;
+  colors: RowColors;
+  compact: boolean;
+  expandedHash: string | null;
+  expandedFile: string | null;
+  directory: string;
+  theme: PluginWorkspacePanelProps["theme"];
+  onToggle: (hash: string) => void;
+  onToggleFile: (path: string) => void;
+  onOpenMenu: (row: GitTreeRow, pageX: number, pageY: number) => void;
+  onShowTip: (row: GitTreeRow, pageX: number, pageY: number) => void;
+  onHideTip: () => void;
+  onScrollDismiss: () => void;
+}) {
+  const expandedIndex = useMemo(
+    () => (expandedHash ? rows.findIndex((r) => r.hash === expandedHash) : -1),
+    [rows, expandedHash],
+  );
+  const [collapsedH, setCollapsedH] = useState(COLLAPSED_ROW_H);
+  const [expandedH, setExpandedH] = useState(COLLAPSED_ROW_H);
+  const collapsedLocked = useRef(false);
+  const expandedIndexRef = useRef(expandedIndex);
+  expandedIndexRef.current = expandedIndex;
+  const viewportRef = useRef(0);
+  const scrollYRef = useRef(0);
+  const rangeRef = useRef({ start: 0, end: Math.min(rows.length, LIST_OVERSCAN * 2 + 12) });
+  const [range, setRange] = useState(rangeRef.current);
+
+  const applyRange = useCallback(
+    (scrollY: number, viewportH: number, count: number, expIdx: number, expH: number, rowH: number) => {
+      const next = windowRange(scrollY, viewportH, count, rowH, expIdx, expH);
+      const cur = rangeRef.current;
+      if (cur.start === next.start && cur.end === next.end) return;
+      rangeRef.current = next;
+      setRange(next);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    collapsedLocked.current = false;
+  }, [rows]);
+
+  useEffect(() => {
+    setExpandedH(COLLAPSED_ROW_H);
+  }, [expandedHash]);
+
+  useEffect(() => {
+    applyRange(scrollYRef.current, viewportRef.current, rows.length, expandedIndex, expandedH, collapsedH);
+  }, [applyRange, rows.length, expandedIndex, expandedH, collapsedH]);
+
+  const onHeight = useCallback((index: number, height: number) => {
+    if (height <= 0) return;
+    if (index === expandedIndexRef.current) {
+      setExpandedH((cur) => (Math.abs(cur - height) > 0.5 ? height : cur));
+      return;
+    }
+    if (!collapsedLocked.current) {
+      collapsedLocked.current = true;
+      setCollapsedH((cur) => (Math.abs(cur - height) > 0.5 ? height : cur));
+    }
+  }, []);
+
+  const extra = expandedIndex >= 0 ? Math.max(0, expandedH - collapsedH) : 0;
+  const totalH = LIST_PAD_Y * 2 + rows.length * collapsedH + extra;
+
+  const indices: number[] = [];
+  for (let i = range.start; i < range.end; i++) indices.push(i);
+  if (expandedIndex >= 0 && (expandedIndex < range.start || expandedIndex >= range.end)) {
+    indices.push(expandedIndex);
+    indices.sort((a, b) => a - b);
+  }
+
+  return (
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{ paddingHorizontal: LIST_PAD_X }}
+      onLayout={(e) => {
+        const h = e.nativeEvent.layout.height;
+        if (h <= 0) return;
+        viewportRef.current = h;
+        applyRange(scrollYRef.current, h, rows.length, expandedIndex, expandedH, collapsedH);
+      }}
+      onScroll={(e) => {
+        onScrollDismiss();
+        const y = e.nativeEvent.contentOffset.y;
+        scrollYRef.current = y;
+        applyRange(y, viewportRef.current, rows.length, expandedIndex, expandedH, collapsedH);
+      }}
+      scrollEventThrottle={16}
+    >
+      <View style={{ height: totalH, position: "relative" as const, overflow: "visible" as const }}>
+        {indices.map((i) => (
+          <View
+            key={`${rows[i].hash}-${i}`}
+            style={{
+              position: "absolute" as const,
+              top: itemOffset(i, collapsedH, expandedIndex, expandedH),
+              left: 0,
+              right: 0,
+            }}
+          >
+            <CommitRow
+              row={rows[i]}
+              prevRow={i > 0 ? rows[i - 1] : undefined}
+              index={i}
+              graphW={graphW}
+              colors={colors}
+              compact={compact}
+              expanded={expandedHash === rows[i].hash}
+              expandedFile={expandedHash === rows[i].hash ? expandedFile : null}
+              onToggle={onToggle}
+              onToggleFile={onToggleFile}
+              directory={directory}
+              theme={theme}
+              onOpenMenu={onOpenMenu}
+              onShowTip={onShowTip}
+              onHideTip={onHideTip}
+              onHeight={onHeight}
+            />
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
 }
 
 // --- Panel ----------------------------------------------------------------------
@@ -1028,7 +1235,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const refresh = useCallback(() => {
     if (!directory) return;
     setLoading(true);
-    getTree({ directory, limit: 300 })
+    getTree({ directory, limit: COMMIT_LIMIT })
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
@@ -1065,6 +1272,52 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     setTip(null);
     setMenu(null);
   }, []);
+
+  const handleOpenMenu = useCallback(
+    (row: GitTreeRow, pageX: number, pageY: number) => {
+      menuOpen.current = true;
+      setTip(null);
+      placeAt(pageX, pageY, 208, 92, (x, y) => setMenu({ x, y, row }));
+    },
+    [placeAt],
+  );
+
+  const handleShowTip = useCallback(
+    (row: GitTreeRow, pageX: number, pageY: number) => {
+      if (menuOpen.current) return;
+      placeAt(pageX, pageY, 308, 88, (x, y) => setTip({ x, y, row }));
+    },
+    [placeAt],
+  );
+
+  const handleHideTip = useCallback(() => setTip(null), []);
+
+  const colors: RowColors = useMemo(
+    () => ({
+      fg: theme.colors.foreground,
+      fgMuted: theme.colors.foregroundMuted,
+      success: theme.colors.statusSuccess,
+      chipBg: theme.colors.surface1,
+      selected: theme.colors.surface2,
+      hoverBg: theme.colors.surface2,
+      expandedBg: theme.colors.surface2,
+      hairline: theme.colors.border + "66",
+      ring: theme.colors.border + "40",
+      cardBg: theme.colors.surface1,
+    }),
+    [theme],
+  );
+
+  const floatColors: FloatColors = useMemo(
+    () => ({
+      fg: theme.colors.foreground,
+      fgMuted: theme.colors.foregroundMuted,
+      surface: theme.colors.surface2,
+      ring: theme.colors.border + "66",
+      hover: theme.colors.surface1,
+    }),
+    [theme],
+  );
 
   const styles = useMemo(
     () => ({
@@ -1144,26 +1397,6 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const rows = data?.rows ?? [];
   const graphW = graphWidth(laneCountOf(rows));
   const heads = data?.heads ?? [];
-  const colors = {
-    fg: theme.colors.foreground,
-    fgMuted: theme.colors.foregroundMuted,
-    success: theme.colors.statusSuccess,
-    chipBg: theme.colors.surface1,
-    selected: theme.colors.surface2,
-    hoverBg: theme.colors.surface2,
-    expandedBg: theme.colors.surface2,
-    hairline: theme.colors.border + "66",
-    ring: theme.colors.border + "40",
-    cardBg: theme.colors.surface1,
-  };
-
-  const floatColors: FloatColors = {
-    fg: theme.colors.foreground,
-    fgMuted: theme.colors.foregroundMuted,
-    surface: theme.colors.surface2,
-    ring: theme.colors.border + "66",
-    hover: theme.colors.surface1,
-  };
 
   return (
     <View ref={shellRef} style={styles.screen}>
@@ -1236,41 +1469,22 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           <Text style={styles.emptyText}>No commits found</Text>
         </View>
       ) : (
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 8 }}
-          onScroll={dismissFloats}
-          scrollEventThrottle={64}
-        >
-          <View style={{ position: "relative" as const, overflow: "visible" as const }}>
-            {rows.map((row, i) => (
-              <CommitRow
-                key={`${row.hash}-${i}`}
-                row={row}
-                prevRow={i > 0 ? rows[i - 1] : undefined}
-                graphW={graphW}
-                colors={colors}
-                compact={layout.compact}
-                expanded={expandedHash === row.hash}
-                expandedFile={expandedHash === row.hash ? expandedFile : null}
-                onToggle={() => toggleCommit(row.hash)}
-                onToggleFile={toggleFile}
-                directory={directory ?? ""}
-                theme={theme}
-                onOpenMenu={(pageX, pageY) => {
-                  menuOpen.current = true;
-                  setTip(null);
-                  placeAt(pageX, pageY, 208, 92, (x, y) => setMenu({ x, y, row }));
-                }}
-                onShowTip={(pageX, pageY) => {
-                  if (menuOpen.current) return;
-                  placeAt(pageX, pageY, 308, 88, (x, y) => setTip({ x, y, row }));
-                }}
-                onHideTip={() => setTip(null)}
-              />
-            ))}
-          </View>
-        </ScrollView>
+        <VirtualCommitList
+          rows={rows}
+          graphW={graphW}
+          colors={colors}
+          compact={layout.compact}
+          expandedHash={expandedHash}
+          expandedFile={expandedFile}
+          directory={directory ?? ""}
+          theme={theme}
+          onToggle={toggleCommit}
+          onToggleFile={toggleFile}
+          onOpenMenu={handleOpenMenu}
+          onShowTip={handleShowTip}
+          onHideTip={handleHideTip}
+          onScrollDismiss={dismissFloats}
+        />
       )}
 
       {tip && !menu ? <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} /> : null}
