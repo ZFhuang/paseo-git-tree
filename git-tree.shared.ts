@@ -109,6 +109,49 @@ export const commitDiff = defineRpc({
 
 export type CommitDiffOutput = z.output<typeof commitDiff.output>;
 
+/** Files changed between two arbitrary commits (additions/deletions
+ *  relative to `base`). */
+export const commitCompare = defineRpc({
+  name: "gittree.compare",
+  input: z.object({
+    directory: z.string().min(1),
+    base: z.string().min(1),
+    head: z.string().min(1),
+  }),
+  output: z.object({
+    files: z.array(
+      z.object({
+        path: z.string(),
+        /** Path before a rename; null for non-renames. */
+        oldPath: z.string().nullable(),
+        status: z.string(),
+        additions: z.number().int(),
+        deletions: z.number().int(),
+      }),
+    ),
+    error: z.string().nullable(),
+  }),
+});
+
+export type CommitCompareOutput = z.output<typeof commitCompare.output>;
+
+/** Unified diff of one file between two arbitrary commits. */
+export const commitCompareDiff = defineRpc({
+  name: "gittree.compare.diff",
+  input: z.object({
+    directory: z.string().min(1),
+    base: z.string().min(1),
+    head: z.string().min(1),
+    path: z.string().min(1),
+  }),
+  output: z.object({
+    patch: z.string(),
+    error: z.string().nullable(),
+  }),
+});
+
+export type CommitCompareDiffOutput = z.output<typeof commitCompareDiff.output>;
+
 const branchOp = z.enum(["checkout", "merge", "delete", "pull", "create"]);
 
 /** Mutating git branch operations for the header dropdown. */

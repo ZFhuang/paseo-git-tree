@@ -3,11 +3,15 @@ import { Icon, useToast } from "@getpaseo/plugin/react-native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
+  commitCompare,
+  commitCompareDiff,
   commitDetail,
   commitDiff,
   computeGraph,
   gitBranchOp,
   gitTree,
+  type CommitCompareOutput,
+  type CommitCompareDiffOutput,
   type CommitDetailOutput,
   type TreeScope,
   type CommitDiffOutput,
@@ -1131,6 +1135,133 @@ function CommitExpansion({
   );
 }
 
+/** Expanded diff between two arbitrary commits (ctrl/cmd-click pair). */
+function CompareExpansion({
+  directory,
+  base,
+  head,
+  theme,
+  expandedFile,
+  onToggleFile,
+  graphW,
+}: {
+  directory: string;
+  base: GitTreeRow;
+  head: GitTreeRow;
+  theme: PluginWorkspacePanelProps["theme"];
+  expandedFile: string | null;
+  onToggleFile: (path: string) => void;
+  graphW: number;
+}) {
+  const getCompare = useRpc(commitCompare);
+  const getCompareDiff = useRpc(commitCompareDiff);
+  const [result, setResult] = useState<CommitCompareOutput | null>(null);
+  const [diff, setDiff] = useState<CommitCompareDiffOutput | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setResult(null);
+    getCompare({ directory, base: base.hash, head: head.hash })
+      .then((r) => {
+        if (!cancelled) setResult(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [directory, base.hash, head.hash, getCompare]);
+
+  useEffect(() => {
+    if (!expandedFile) {
+      setDiff(null);
+      return;
+    }
+    let cancelled = false;
+    setDiff(null);
+    getCompareDiff({ directory, base: base.hash, head: head.hash, path: expandedFile })
+      .then((d) => {
+        if (!cancelled) setDiff(d);
+      })
+      .catch(() => {
+        if (!cancelled) setDiff({ patch: "", error: "Failed to load diff" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [directory, base.hash, head.hash, expandedFile, getCompareDiff]);
+
+  const colors = {
+    fg: theme.colors.foreground,
+    fgMuted: theme.colors.foregroundMuted,
+    added: theme.colors.statusSuccess,
+    removed: theme.colors.statusDanger,
+    border: theme.colors.border,
+    accent: theme.colors.accent,
+    chipBg: theme.colors.surface1,
+    hoverBg: theme.colors.surface2,
+    sunkenBg: theme.colors.surface0,
+    ring: theme.colors.border + "40",
+  };
+
+  if (!result) {
+    return (
+      <Text style={{ color: colors.fgMuted, fontSize: 12, paddingVertical: 10, paddingRight: 10, marginLeft: graphW }}>
+        Loading…
+      </Text>
+    );
+  }
+  if (result.error) {
+    return (
+      <Text style={{ color: colors.removed, fontSize: 12, paddingVertical: 10, paddingRight: 10, marginLeft: graphW }}>
+        {result.error}
+      </Text>
+    );
+  }
+
+  return (
+    <View style={{ marginLeft: graphW, paddingTop: 8, paddingBottom: 12, paddingRight: 12, gap: 10 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Text style={{ color: colors.fg, fontSize: 12, fontFamily: "monospace" }}>{base.shortHash}</Text>
+        <Icon name="ArrowRight" size={11} color={colors.fgMuted} />
+        <Text style={{ color: colors.fg, fontSize: 12, fontFamily: "monospace" }}>{head.shortHash}</Text>
+        <Text style={{ color: colors.fgMuted, fontSize: 11 }}>
+          {result.files.length} file{result.files.length === 1 ? "" : "s"} differ
+        </Text>
+      </View>
+      <View
+        style={{
+          backgroundColor: colors.sunkenBg,
+          borderRadius: CARD_RADIUS,
+          borderWidth: 1,
+          borderColor: colors.ring,
+          paddingVertical: 4,
+          paddingHorizontal: 4,
+          gap: 2,
+        }}
+      >
+        {result.files.map((file) => (
+          <View key={file.path}>
+            <FileRow
+              file={file}
+              colors={colors}
+              expanded={expandedFile === file.path}
+              onToggle={() => onToggleFile(file.path)}
+            />
+            {expandedFile === file.path ? (
+              <InlineDiff
+                patch={diff && !diff.error ? diff.patch : null}
+                loading={diff === null}
+                error={diff?.error ?? null}
+                colors={colors}
+              />
+            ) : null}
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 // --- Commit list row -----------------------------------------------------------
 
 type RowColors = {
@@ -1155,7 +1286,10 @@ const CommitRow = memo(function CommitRow({
   compact,
   expanded,
   expandedFile,
+  compareBase,
+  compareTarget,
   onToggle,
+  onCompareClick,
   onToggleFile,
   directory,
   theme,
@@ -1172,7 +1306,13 @@ const CommitRow = memo(function CommitRow({
   compact: boolean;
   expanded: boolean;
   expandedFile: string | null;
+  /** Pending compare anchor row, if any. */
+  compareBase: GitTreeRow | null;
+  /** Second commit of the compare pair, compared against the anchor. */
+  compareTarget: GitTreeRow | null;
   onToggle: (hash: string) => void;
+  /** Ctrl/Cmd+click handler: picks or clears the compare pair. */
+  onCompareClick: (row: GitTreeRow) => void;
   onToggleFile: (path: string) => void;
   directory: string;
   theme: PluginWorkspacePanelProps["theme"];
@@ -1204,7 +1344,13 @@ const CommitRow = memo(function CommitRow({
   const isHead = headRef !== undefined || row.refs.includes("HEAD");
   const [hovered, setHovered] = useState(false);
 
-  const rowBg = expanded ? colors.expandedBg : hovered ? colors.hoverBg : colors.cardBg;
+  const rowBg = expanded
+    ? colors.expandedBg
+    : hovered
+      ? colors.hoverBg
+      : compareBase?.hash === row.hash || compareTarget?.hash === row.hash
+        ? colors.selected
+        : colors.cardBg;
 
   const clearTipTimer = () => {
     if (tipTimer.current) {
@@ -1250,7 +1396,11 @@ const CommitRow = memo(function CommitRow({
         }}
       >
       <Pressable
-        onPress={() => onToggle(row.hash)}
+        onPress={(e) => {
+          const ne = e.nativeEvent as { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean };
+          if (ne.ctrlKey || ne.metaKey || ne.altKey) onCompareClick(row);
+          else onToggle(row.hash);
+        }}
         onHoverIn={() => {
           setHovered(true);
           scheduleTip();
@@ -1318,6 +1468,34 @@ const CommitRow = memo(function CommitRow({
                 </Text>
               </View>
             ))}
+            {compareBase?.hash === row.hash ? (
+              <View
+                style={{
+                  backgroundColor: colors.selected,
+                  borderRadius: 4,
+                  paddingHorizontal: 5,
+                  paddingVertical: 1,
+                  borderWidth: 1,
+                  borderColor: colors.hairline,
+                }}
+              >
+                <Text style={{ fontSize: 10, color: colors.fg, fontWeight: "700" }}>⇔ base</Text>
+              </View>
+            ) : null}
+            {compareTarget?.hash === row.hash ? (
+              <View
+                style={{
+                  backgroundColor: colors.selected,
+                  borderRadius: 4,
+                  paddingHorizontal: 5,
+                  paddingVertical: 1,
+                  borderWidth: 1,
+                  borderColor: colors.hairline,
+                }}
+              >
+                <Text style={{ fontSize: 10, color: colors.fg, fontWeight: "700" }}>⇔ target</Text>
+              </View>
+            ) : null}
             <Text
               numberOfLines={1}
               style={{
@@ -1366,6 +1544,20 @@ const CommitRow = memo(function CommitRow({
           <CommitExpansion
             directory={directory}
             hash={row.hash}
+            theme={theme}
+            expandedFile={expandedFile}
+            onToggleFile={onToggleFile}
+            graphW={graphW}
+          />
+        </View>
+      ) : null}
+      {compareTarget?.hash === row.hash && compareBase ? (
+        <View>
+          <View style={{ height: 1, backgroundColor: colors.hairline, marginLeft: graphW }} />
+          <CompareExpansion
+            directory={directory}
+            base={compareBase}
+            head={compareTarget}
             theme={theme}
             expandedFile={expandedFile}
             onToggleFile={onToggleFile}
@@ -1436,6 +1628,9 @@ function VirtualCommitList({
   compact,
   expandedHash,
   expandedFile,
+  compareBase,
+  compareTarget,
+  onCompareClick,
   directory,
   theme,
   onToggle,
@@ -1451,6 +1646,9 @@ function VirtualCommitList({
   compact: boolean;
   expandedHash: string | null;
   expandedFile: string | null;
+  compareBase: GitTreeRow | null;
+  compareTarget: GitTreeRow | null;
+  onCompareClick: (row: GitTreeRow) => void;
   directory: string;
   theme: PluginWorkspacePanelProps["theme"];
   onToggle: (hash: string) => void;
@@ -1461,8 +1659,13 @@ function VirtualCommitList({
   onScrollDismiss: () => void;
 }) {
   const expandedIndex = useMemo(
-    () => (expandedHash ? rows.findIndex((r) => r.hash === expandedHash) : -1),
-    [rows, expandedHash],
+    () =>
+      compareTarget
+        ? rows.findIndex((r) => r.hash === compareTarget.hash)
+        : expandedHash
+          ? rows.findIndex((r) => r.hash === expandedHash)
+          : -1,
+    [rows, expandedHash, compareTarget],
   );
   const [collapsedH, setCollapsedH] = useState(COLLAPSED_ROW_H);
   const [expandedH, setExpandedH] = useState(COLLAPSED_ROW_H);
@@ -1557,7 +1760,10 @@ function VirtualCommitList({
               compact={compact}
               expanded={expandedHash === rows[i].hash}
               expandedFile={expandedHash === rows[i].hash ? expandedFile : null}
+              compareBase={compareBase}
+              compareTarget={compareTarget}
               onToggle={onToggle}
+              onCompareClick={onCompareClick}
               onToggleFile={onToggleFile}
               directory={directory}
               theme={theme}
@@ -1603,6 +1809,10 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   }, [pathFilter]);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
+  /** Ctrl/cmd-click compare pair. base is the anchor row; target the second
+   *  commit; the CompareExpansion renders under the target row. */
+  const [compareBase, setCompareBase] = useState<GitTreeRow | null>(null);
+  const [compareTarget, setCompareTarget] = useState<GitTreeRow | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1629,7 +1839,30 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const toggleCommit = useCallback((hash: string) => {
     setExpandedHash((cur) => (cur === hash ? null : hash));
     setExpandedFile(null);
+    setCompareBase(null);
+    setCompareTarget(null);
   }, []);
+
+  /** Ctrl/cmd-click: first pick sets the anchor, second shows the comparison,
+   *  clicking the anchor again clears the pair. */
+  const handleCompareClick = useCallback(
+    (row: GitTreeRow) => {
+      setExpandedHash(null);
+      setExpandedFile(null);
+      if (compareTarget || !compareBase) {
+        setCompareBase(row);
+        setCompareTarget(null);
+        return;
+      }
+      if (compareBase.hash === row.hash) {
+        setCompareBase(null);
+        setCompareTarget(null);
+        return;
+      }
+      setCompareTarget(row);
+    },
+    [compareBase, compareTarget],
+  );
 
   const toggleFile = useCallback((path: string) => {
     setExpandedFile((cur) => (cur === path ? null : path));
@@ -2020,6 +2253,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           compact={layout.compact}
           expandedHash={expandedHash}
           expandedFile={expandedFile}
+          compareBase={compareBase}
+          compareTarget={compareTarget}
+          onCompareClick={handleCompareClick}
           directory={directory ?? ""}
           theme={theme}
           onToggle={toggleCommit}

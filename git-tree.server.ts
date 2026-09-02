@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree } from "./git-tree.shared";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree } from "./git-tree.shared";
 
 type Input = ZodOutput<typeof gitTree.input>;
 
@@ -108,24 +108,6 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
   }
 }
 
-export async function getCommitDetail(
-  input: ZodOutput<typeof commitDetail.input>,
-): Promise<ZodOutput<typeof commitDetail.output>> {
-  const directory = path.resolve(input.directory);
-  const { hash } = input;
-  try {
-    const fmt = "%H%x1f%an%x1f%ae%x1f%aI%x1f%P%x1f%s%x1f%b";
-    const meta = await runGit(directory, ["show", "-s", `--pretty=format:${fmt}`, hash]);
-    const [fullHash = "", author = "", email = "", date = "", parentsRaw = "", subject = "", ...rest] =
-      meta.split("\x1f");
-    const bodyText = rest.join("\x1f").trim();
-
-    const base = await diffBase(directory, hash);
-    const [stats, statuses] = await Promise.all([
-      runGit(directory, ["diff", "--numstat", base, hash]).catch(() => ""),
-      runGit(directory, ["diff", "--name-status", base, hash]).catch(() => ""),
-    ]);
-
 /**
  * `git diff --numstat` reports a rename as `old => new` or the brace form
  * `pre/{old => new}post`. Normalize both to the destination path so the
@@ -142,38 +124,67 @@ function normalizeNumstatPath(raw: string): string {
   return raw;
 }
 
-    const statByPath = new Map<string, { additions: number; deletions: number }>();
-    for (const line of stats.split("\n")) {
-      if (!line.trim()) continue;
-      const [a = "0", d = "0", ...p] = line.split("\t");
-      const filePath = normalizeNumstatPath(p.join("\t"));
-      statByPath.set(filePath, {
-        additions: a === "-" ? 0 : Number.parseInt(a, 10) || 0,
-        deletions: d === "-" ? 0 : Number.parseInt(d, 10) || 0,
-      });
-    }
-    const statusByPath = new Map<string, string>();
-    const oldPathByPath = new Map<string, string>();
-    for (const line of statuses.split("\n")) {
-      if (!line.trim()) continue;
-      const parts = line.split("\t");
-      const status = (parts[0] ?? "").charAt(0);
-      const filePath = parts.length > 2 ? parts[2] : parts[1];
-      if (filePath) {
-        statusByPath.set(filePath, status);
-        if (parts.length > 2) oldPathByPath.set(filePath, parts[1]);
-      }
-    }
+type DiffFile = {
+  path: string;
+  oldPath: string | null;
+  status: string;
+  additions: number;
+  deletions: number;
+};
 
-    const files = [...new Set([...statByPath.keys(), ...statusByPath.keys()])]
-      .sort()
-      .map((filePath) => ({
-        path: filePath,
-        oldPath: oldPathByPath.get(filePath) ?? null,
-        status: statusByPath.get(filePath) ?? "M",
-        additions: statByPath.get(filePath)?.additions ?? 0,
-        deletions: statByPath.get(filePath)?.deletions ?? 0,
-      }));
+/** Merge `git diff --numstat` and `--name-status` between two revs into one
+ *  per-file list (rename-aware). */
+async function diffFiles(directory: string, base: string, head: string): Promise<DiffFile[]> {
+  const [stats, statuses] = await Promise.all([
+    runGit(directory, ["diff", "--numstat", base, head]).catch(() => ""),
+    runGit(directory, ["diff", "--name-status", base, head]).catch(() => ""),
+  ]);
+  const statByPath = new Map<string, { additions: number; deletions: number }>();
+  for (const line of stats.split("\n")) {
+    if (!line.trim()) continue;
+    const [a = "0", d = "0", ...p] = line.split("\t");
+    statByPath.set(normalizeNumstatPath(p.join("\t")), {
+      additions: a === "-" ? 0 : Number.parseInt(a, 10) || 0,
+      deletions: d === "-" ? 0 : Number.parseInt(d, 10) || 0,
+    });
+  }
+  const statusByPath = new Map<string, string>();
+  const oldPathByPath = new Map<string, string>();
+  for (const line of statuses.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    const status = (parts[0] ?? "").charAt(0);
+    const filePath = parts.length > 2 ? parts[2] : parts[1];
+    if (filePath) {
+      statusByPath.set(filePath, status);
+      if (parts.length > 2) oldPathByPath.set(filePath, parts[1]);
+    }
+  }
+  return [...new Set([...statByPath.keys(), ...statusByPath.keys()])]
+    .sort()
+    .map((filePath) => ({
+      path: filePath,
+      oldPath: oldPathByPath.get(filePath) ?? null,
+      status: statusByPath.get(filePath) ?? "M",
+      additions: statByPath.get(filePath)?.additions ?? 0,
+      deletions: statByPath.get(filePath)?.deletions ?? 0,
+    }));
+}
+
+export async function getCommitDetail(
+  input: ZodOutput<typeof commitDetail.input>,
+): Promise<ZodOutput<typeof commitDetail.output>> {
+  const directory = path.resolve(input.directory);
+  const { hash } = input;
+  try {
+    const fmt = "%H%x1f%an%x1f%ae%x1f%aI%x1f%P%x1f%s%x1f%b";
+    const meta = await runGit(directory, ["show", "-s", `--pretty=format:${fmt}`, hash]);
+    const [fullHash = "", author = "", email = "", date = "", parentsRaw = "", subject = "", ...rest] =
+      meta.split("\x1f");
+    const bodyText = rest.join("\x1f").trim();
+
+    const base = await diffBase(directory, hash);
+    const files = await diffFiles(directory, base, hash);
 
     return {
       hash: fullHash || hash,
@@ -237,6 +248,35 @@ function assertBranchName(name: string): string {
 async function currentBranchName(directory: string): Promise<string> {
   const out = await runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return firstLine(out).trim();
+}
+
+export async function getCommitCompare(
+  input: ZodOutput<typeof commitCompare.input>,
+): Promise<ZodOutput<typeof commitCompare.output>> {
+  const directory = path.resolve(input.directory);
+  try {
+    const files = await diffFiles(directory, input.base, input.head);
+    return { files, error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { files: [], error: firstLine(message) || message };
+  }
+}
+
+export async function getCommitCompareDiff(
+  input: ZodOutput<typeof commitCompareDiff.input>,
+): Promise<ZodOutput<typeof commitCompareDiff.output>> {
+  const directory = path.resolve(input.directory);
+  try {
+    const patch = await runGit(
+      directory,
+      ["diff", input.base, input.head, "--", input.path],
+    );
+    return { patch, error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { patch: "", error: firstLine(message) || message };
+  }
 }
 
 export async function runBranchOp(
