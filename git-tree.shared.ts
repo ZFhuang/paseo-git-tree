@@ -42,6 +42,8 @@ export const gitTree = defineRpc({
     /** Which refs feed the log: the checked-out branch, all local branches
      *  (heads), or everything including remotes and tags. */
     scope: treeScope.default("all"),
+    /** Only commits touching this path (file or directory). Optional. */
+    path: z.string().optional(),
   }),
   output: z.object({
     rows: z.array(rowSchema),

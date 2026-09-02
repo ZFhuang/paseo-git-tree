@@ -1592,6 +1592,15 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  /** "f:..." prefix routes the query to git log -- <path> on the server;
+   *  anything else is a client-side text match. */
+  const pathFilter = query.trim().match(/^f:\s*(.*)$/)?.[1]?.trim() ?? "";
+  /** Debounced mirror of pathFilter — typing shouldn't spawn a git log per keypress. */
+  const [debouncedPath, setDebouncedPath] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedPath(pathFilter), 250);
+    return () => clearTimeout(t);
+  }, [pathFilter]);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
@@ -1607,11 +1616,11 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const refresh = useCallback(() => {
     if (!directory) return;
     setLoading(true);
-    getTree({ directory, limit: COMMIT_LIMIT, scope })
+    getTree({ directory, limit: COMMIT_LIMIT, scope, ...(debouncedPath ? { path: debouncedPath } : {}) })
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [directory, getTree, scope]);
+  }, [directory, getTree, scope, debouncedPath]);
 
   useEffect(() => {
     refresh();
@@ -1795,7 +1804,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const allRows = data?.rows ?? [];
   const queryTrim = query.trim().toLowerCase();
   const { rows, graphW } = useMemo(() => {
-    if (!queryTrim) return { rows: allRows, graphW: graphWidth(laneCountOf(allRows)) };
+    // A path filter is resolved server-side (git log -- <path>); the rows we
+    // get back are already the matching subset.
+    if (!queryTrim || debouncedPath) return { rows: allRows, graphW: graphWidth(laneCountOf(allRows)) };
     const hits = allRows.filter(
       (r) =>
         r.subject.toLowerCase().includes(queryTrim) ||
@@ -1806,7 +1817,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     // Recompute lanes on the filtered subset so the graph stays connected.
     const relaid = computeGraph(hits);
     return { rows: relaid, graphW: graphWidth(laneCountOf(relaid)) };
-  }, [allRows, queryTrim]);
+  }, [allRows, queryTrim, debouncedPath]);
   const heads = data?.heads ?? [];
   const currentHead = heads.find((h) => h.isCurrent);
   const triggerName = currentHead?.name ?? (heads.length > 0 ? "HEAD" : null);
@@ -1820,7 +1831,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           {rows.length > 0 ? (
             <Text style={styles.subtitle}>
               {queryTrim
-                ? `${rows.length} of ${allRows.length} commits match "${query.trim()}"`
+                ? pathFilter
+                  ? `commits touching "${pathFilter}"…`
+                  : `${rows.length} of ${allRows.length} commits match "${query.trim()}"`
                 : `${rows.length} commit${rows.length === 1 ? "" : "s"}`}
             </Text>
           ) : null}
@@ -1961,7 +1974,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Filter by message, author, hash or branch…"
+            placeholder="Search message/author/hash · f: <path> filters by file"
             placeholderTextColor={theme.colors.foregroundMuted}
             autoFocus
             style={{

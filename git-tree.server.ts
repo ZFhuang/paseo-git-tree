@@ -50,9 +50,10 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
     const fmt = "%x1e%H%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s%x1e";
     const refs =
       scope === "current" ? ["HEAD"] : scope === "local" ? ["--branches"] : ["--all"];
+    const pathArgs = input.path ? ["--", input.path] : [];
     const out = await runGit(
       directory,
-      ["log", "--topo-order", ...refs, `--pretty=format:${fmt}`, `-n${limit}`],
+      ["log", "--topo-order", ...refs, `--pretty=format:${fmt}`, `-n${limit}`, ...pathArgs],
       30_000,
     );
 
