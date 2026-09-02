@@ -101,10 +101,39 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
       // Branch listing is best-effort; the graph is the main content.
     }
 
-    return { rows, heads, error: null };
+    // Uncommitted changes (index + worktree vs HEAD) plus untracked files.
+    // Best-effort: null when clean or the repo has no commits yet.
+    let uncommitted: ZodOutput<typeof gitTree.output>["uncommitted"] = null;
+    try {
+      const [numstat, statusOut] = await Promise.all([
+        runGit(directory, ["diff", "HEAD", "--numstat"]).catch(() => ""),
+        runGit(directory, ["status", "--porcelain"]).catch(() => ""),
+      ]);
+      let additions = 0;
+      let deletions = 0;
+      let tracked = 0;
+      for (const line of numstat.split("\n")) {
+        if (!line.trim()) continue;
+        const [a = "0", d = "0"] = line.split("\t");
+        tracked++;
+        additions += a === "-" ? 0 : Number.parseInt(a, 10) || 0;
+        deletions += d === "-" ? 0 : Number.parseInt(d, 10) || 0;
+      }
+      let untracked = 0;
+      for (const line of statusOut.split("\n")) {
+        if (line.startsWith("??")) untracked++;
+      }
+      if (tracked > 0 || untracked > 0) {
+        uncommitted = { count: tracked + untracked, additions, deletions, untracked };
+      }
+    } catch {
+      // Uncommitted summary is best-effort.
+    }
+
+    return { rows, heads, uncommitted, error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { rows: [], heads: [], error: message };
+    return { rows: [], heads: [], uncommitted: null, error: message };
   }
 }
 

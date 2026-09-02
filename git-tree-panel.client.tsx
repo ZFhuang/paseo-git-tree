@@ -1572,6 +1572,59 @@ const CommitRow = memo(function CommitRow({
   );
 });
 
+/** Pseudo-row above HEAD summarizing index + worktree + untracked changes. */
+function UncommittedRow({
+  summary,
+  graphW,
+  colors,
+}: {
+  summary: NonNullable<GitTreeOutput["uncommitted"]>;
+  graphW: number;
+  colors: RowColors;
+}) {
+  return (
+    <View style={{ marginBottom: CARD_GAP, paddingLeft: graphW }}>
+      <View
+        style={{
+          backgroundColor: colors.cardBg,
+          borderRadius: CARD_RADIUS,
+          borderWidth: 1,
+          borderColor: colors.hairline,
+          borderStyle: "dashed" as const,
+          paddingVertical: 6,
+          paddingHorizontal: 12,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>
+            Uncommitted changes
+          </Text>
+          {summary.untracked > 0 ? (
+            <Text style={{ color: colors.fgMuted, fontSize: 10 }}>
+              +{summary.untracked} untracked
+            </Text>
+          ) : null}
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 }}>
+          <Text style={{ color: colors.fgMuted, fontSize: 10 }}>
+            {summary.count} file{summary.count === 1 ? "" : "s"}
+          </Text>
+          {summary.additions > 0 ? (
+            <Text style={{ color: colors.success, fontSize: 10, fontFamily: "monospace" }}>
+              +{summary.additions}
+            </Text>
+          ) : null}
+          {summary.deletions > 0 ? (
+            <Text style={{ color: colors.fgMuted, fontSize: 10, fontFamily: "monospace" }}>
+              −{summary.deletions}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
 // --- Windowed list -------------------------------------------------------------
 
 function itemOffset(
@@ -1631,6 +1684,7 @@ function VirtualCommitList({
   compareBase,
   compareTarget,
   onCompareClick,
+  uncommitted,
   directory,
   theme,
   onToggle,
@@ -1649,6 +1703,7 @@ function VirtualCommitList({
   compareBase: GitTreeRow | null;
   compareTarget: GitTreeRow | null;
   onCompareClick: (row: GitTreeRow) => void;
+  uncommitted: GitTreeOutput["uncommitted"];
   directory: string;
   theme: PluginWorkspacePanelProps["theme"];
   onToggle: (hash: string) => void;
@@ -1669,6 +1724,8 @@ function VirtualCommitList({
   );
   const [collapsedH, setCollapsedH] = useState(COLLAPSED_ROW_H);
   const [expandedH, setExpandedH] = useState(COLLAPSED_ROW_H);
+  /** Measured height of the uncommitted pseudo-row (0 when absent). */
+  const [uncommittedH, setUncommittedH] = useState(0);
   const collapsedLocked = useRef(false);
   const expandedIndexRef = useRef(expandedIndex);
   expandedIndexRef.current = expandedIndex;
@@ -1713,7 +1770,7 @@ function VirtualCommitList({
   }, []);
 
   const extra = expandedIndex >= 0 ? Math.max(0, expandedH - collapsedH) : 0;
-  const totalH = LIST_PAD_Y * 2 + rows.length * collapsedH + extra;
+  const totalH = LIST_PAD_Y * 2 + rows.length * collapsedH + extra + uncommittedH;
 
   const indices: number[] = [];
   for (let i = range.start; i < range.end; i++) indices.push(i);
@@ -1740,13 +1797,25 @@ function VirtualCommitList({
       }}
       scrollEventThrottle={16}
     >
-      <View style={{ height: totalH, position: "relative" as const, overflow: "visible" as const }}>
+      <View style={{ height: totalH, position: "relative" as const, overflow: "visible" as const }}
+        onLayout={undefined}
+      >
+        {uncommitted ? (
+          <View
+            onLayout={(e) => {
+              const h = e.nativeEvent.layout.height + CARD_GAP;
+              setUncommittedH((cur) => (Math.abs(cur - h) > 0.5 ? h : cur));
+            }}
+          >
+            <UncommittedRow summary={uncommitted} graphW={graphW} colors={colors} />
+          </View>
+        ) : null}
         {indices.map((i) => (
           <View
             key={`${rows[i].hash}-${i}`}
             style={{
               position: "absolute" as const,
-              top: itemOffset(i, collapsedH, expandedIndex, expandedH),
+              top: uncommittedH + itemOffset(i, collapsedH, expandedIndex, expandedH),
               left: 0,
               right: 0,
             }}
@@ -2256,6 +2325,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           compareBase={compareBase}
           compareTarget={compareTarget}
           onCompareClick={handleCompareClick}
+          uncommitted={data?.uncommitted ?? null}
           directory={directory ?? ""}
           theme={theme}
           onToggle={toggleCommit}

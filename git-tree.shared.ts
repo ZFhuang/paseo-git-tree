@@ -54,6 +54,17 @@ export const gitTree = defineRpc({
         isCurrent: z.boolean(),
       }),
     ),
+    /** Uncommitted changes summary: index + worktree + untracked, vs HEAD.
+ *  Null when clean or on a repo with no commits. */
+    uncommitted: z
+      .object({
+        count: z.number().int(),
+        additions: z.number().int(),
+        deletions: z.number().int(),
+        /** Untracked files (no diff stat). */
+        untracked: z.number().int(),
+      })
+      .nullable(),
     /** Human-readable failure reason; null when data is usable. */
     error: z.string().nullable(),
   }),
