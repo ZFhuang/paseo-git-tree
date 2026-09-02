@@ -31,11 +31,17 @@ export const rowSchema = z.object({
   ),
 });
 
+export const treeScope = z.enum(["current", "local", "all"]);
+export type TreeScope = z.output<typeof treeScope>;
+
 export const gitTree = defineRpc({
   name: "gittree.get",
   input: z.object({
     directory: z.string().min(1),
     limit: z.number().int().positive().max(2000).default(500),
+    /** Which refs feed the log: the checked-out branch, all local branches
+     *  (heads), or everything including remotes and tags. */
+    scope: treeScope.default("all"),
   }),
   output: z.object({
     rows: z.array(rowSchema),

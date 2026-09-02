@@ -43,13 +43,16 @@ async function diffBase(directory: string, hash: string): Promise<string> {
 export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree.output>> {
   const directory = path.resolve(input.directory);
   const limit = input.limit ?? 300;
+  const scope = input.scope ?? "all";
 
   try {
     // %x1e record / %x1f field separators: hash, parents, author, date, refs, subject.
     const fmt = "%x1e%H%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s%x1e";
+    const refs =
+      scope === "current" ? ["HEAD"] : scope === "local" ? ["--branches"] : ["--all"];
     const out = await runGit(
       directory,
-      ["log", "--all", "--topo-order", `--pretty=format:${fmt}`, `-n${limit}`],
+      ["log", "--topo-order", ...refs, `--pretty=format:${fmt}`, `-n${limit}`],
       30_000,
     );
 

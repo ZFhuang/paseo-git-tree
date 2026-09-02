@@ -9,6 +9,7 @@ import {
   gitBranchOp,
   gitTree,
   type CommitDetailOutput,
+  type TreeScope,
   type CommitDiffOutput,
   type GitBranchOp,
   type GitTreeOutput,
@@ -1598,6 +1599,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number } | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
+  const [scope, setScope] = useState<TreeScope>("all");
   const [refreshHover, setRefreshHover] = useState(false);
   const [searchHover, setSearchHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
@@ -1605,11 +1607,11 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const refresh = useCallback(() => {
     if (!directory) return;
     setLoading(true);
-    getTree({ directory, limit: COMMIT_LIMIT })
+    getTree({ directory, limit: COMMIT_LIMIT, scope })
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [directory, getTree]);
+  }, [directory, getTree, scope]);
 
   useEffect(() => {
     refresh();
@@ -1822,6 +1824,42 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
                 : `${rows.length} commit${rows.length === 1 ? "" : "s"}`}
             </Text>
           ) : null}
+          <View style={{ flexDirection: "row", gap: 4, marginTop: 4 }}>
+            {(
+              [
+                ["current", "Branch"],
+                ["local", "Local"],
+                ["all", "All"],
+              ] as const
+            ).map(([value, label]) => {
+              const active = scope === value;
+              return (
+                <Pressable
+                  key={value}
+                  accessibilityRole="button"
+                  onPress={() => setScope(value)}
+                  style={{
+                    paddingHorizontal: 7,
+                    paddingVertical: 2,
+                    borderRadius: 5,
+                    borderWidth: 1,
+                    borderColor: active ? theme.colors.accent + "99" : theme.colors.border + "66",
+                    backgroundColor: active ? theme.colors.accent + "22" : "transparent",
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 10,
+                      fontWeight: active ? "700" : "500",
+                      color: active ? theme.colors.accent : theme.colors.foregroundMuted,
+                    }}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
         {triggerName ? (
           <View ref={branchTriggerRef} style={{ flexShrink: 1, minWidth: 0, marginRight: 4 }}>
