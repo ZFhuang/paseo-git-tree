@@ -30,7 +30,7 @@ const COLLAPSED_ROW_H = ROW_HEIGHT + CARD_BORDER * 2 + CARD_GAP;
 const LIST_OVERSCAN = 18;
 const LIST_PAD_Y = 8;
 const LIST_PAD_X = 8;
-const COMMIT_LIMIT = 2000;
+const COMMIT_LIMIT = 500;
 
 function laneX(lane: number): number {
   return GRAPH_PAD_X + lane * LANE_WIDTH;
