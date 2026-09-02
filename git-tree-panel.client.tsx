@@ -5,6 +5,7 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   commitDetail,
   commitDiff,
+  computeGraph,
   gitBranchOp,
   gitTree,
   type CommitDetailOutput,
@@ -1588,6 +1589,8 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const directory = workspace?.directory ?? null;
   const [data, setData] = useState<GitTreeOutput | null>(null);
   const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
@@ -1596,6 +1599,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
   const [refreshHover, setRefreshHover] = useState(false);
+  const [searchHover, setSearchHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
 
   const refresh = useCallback(() => {
@@ -1786,8 +1790,21 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     );
   }
 
-  const rows = data?.rows ?? [];
-  const graphW = graphWidth(laneCountOf(rows));
+  const allRows = data?.rows ?? [];
+  const queryTrim = query.trim().toLowerCase();
+  const { rows, graphW } = useMemo(() => {
+    if (!queryTrim) return { rows: allRows, graphW: graphWidth(laneCountOf(allRows)) };
+    const hits = allRows.filter(
+      (r) =>
+        r.subject.toLowerCase().includes(queryTrim) ||
+        r.author.toLowerCase().includes(queryTrim) ||
+        r.hash.toLowerCase().startsWith(queryTrim) ||
+        r.refs.some((ref) => ref.toLowerCase().includes(queryTrim)),
+    );
+    // Recompute lanes on the filtered subset so the graph stays connected.
+    const relaid = computeGraph(hits);
+    return { rows: relaid, graphW: graphWidth(laneCountOf(relaid)) };
+  }, [allRows, queryTrim]);
   const heads = data?.heads ?? [];
   const currentHead = heads.find((h) => h.isCurrent);
   const triggerName = currentHead?.name ?? (heads.length > 0 ? "HEAD" : null);
@@ -1800,7 +1817,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           <Text style={styles.title}>Git Tree</Text>
           {rows.length > 0 ? (
             <Text style={styles.subtitle}>
-              {rows.length} commit{rows.length === 1 ? "" : "s"}
+              {queryTrim
+                ? `${rows.length} of ${allRows.length} commits match "${query.trim()}"`
+                : `${rows.length} commit${rows.length === 1 ? "" : "s"}`}
             </Text>
           ) : null}
         </View>
@@ -1850,6 +1869,27 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         ) : null}
         <Pressable
           accessibilityRole="button"
+          onPress={() => {
+            setSearching((v) => !v);
+            if (searching) setQuery("");
+          }}
+          onHoverIn={() => setSearchHover(true)}
+          onHoverOut={() => setSearchHover(false)}
+          hitSlop={8}
+          style={{
+            padding: 6,
+            borderRadius: 6,
+            backgroundColor: searchHover || searching ? theme.colors.surface1 : "transparent",
+          }}
+        >
+          <Icon
+            name="Search"
+            size={14}
+            color={searching ? theme.colors.accent : theme.colors.foreground}
+          />
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
           onPress={refresh}
           onHoverIn={() => setRefreshHover(true)}
           onHoverOut={() => setRefreshHover(false)}
@@ -1867,6 +1907,49 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           />
         </Pressable>
       </View>
+
+      {searching ? (
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            paddingHorizontal: layout.compact ? 10 : 14,
+            paddingVertical: 6,
+            borderBottomWidth: 1,
+            borderBottomColor: theme.colors.border + "66",
+          }}
+        >
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Filter by message, author, hash or branch…"
+            placeholderTextColor={theme.colors.foregroundMuted}
+            autoFocus
+            style={{
+              flex: 1,
+              color: theme.colors.foreground,
+              fontSize: 12,
+              paddingHorizontal: 8,
+              paddingVertical: 5,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: theme.colors.border + "66",
+              backgroundColor: theme.colors.surface1,
+            }}
+          />
+          {query ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setQuery("")}
+              hitSlop={8}
+              style={{ padding: 4 }}
+            >
+              <Icon name="X" size={13} color={theme.colors.foregroundMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
 
       {data?.error ? (
         <View style={styles.empty}>

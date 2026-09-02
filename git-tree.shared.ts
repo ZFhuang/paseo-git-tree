@@ -17,6 +17,8 @@ export const rowSchema = z.object({
   /** ISO-8601 date. */
   date: z.string(),
   refs: z.array(z.string()),
+  /** Parent hashes, in order. Needed to re-lane a filtered subset. */
+  parents: z.array(z.string()),
   lane: z.number().int(),
   /** `fromTop: true` marks a segment that enters this row's dot from above
    *  (a lane converging into this commit); others leave the dot downwards. */
@@ -117,3 +119,111 @@ export const gitBranchOp = defineRpc({
 
 export type GitBranchOp = z.infer<typeof branchOp>;
 export type GitBranchOpOutput = z.output<typeof gitBranchOp.output>;
+
+/**
+ * Compute the lane graph from topologically-sorted commits.
+ *
+ * Modelled on vscode-git-graph's determinePath. `lanes` holds one "tip" per
+ * lane — the childless parent a vertical line is running towards. Every row
+ * emits:
+ *
+ *  - a vertical segment for each lane merely passing through (keeps
+ *    through-lines continuous),
+ *  - the commit's own routing segments from its dot down to each parent
+ *    (vertical when the lane is kept, diagonal when merging/forking),
+ *  - a converging diagonal for extra tips of the same commit (multiple
+ *    children pointing at it), entering the dot from above.
+ *
+ * The client draws each row's segments in that row's local coordinates:
+ * y=0 is this card's top, y=height is the next card's top. fromTop edges
+ * enter from y=0; other edges leave from the header-center toward y=height.
+ */
+/** The fields computeGraph reads; rows satisfy this, and so does the
+ *  server's raw parsed-commit shape. */
+export type GraphInputCommit = Pick<
+  GitTreeRow,
+  "hash" | "parents" | "subject" | "author" | "date" | "refs"
+>;
+
+export function computeGraph(commits: GraphInputCommit[]): GitTreeRow[] {
+  const lanes: (string | null)[] = [];
+  const rows: GitTreeRow[] = [];
+
+  for (const commit of commits) {
+    const before = lanes.slice();
+    const segs = new Map<string, { from: number; to: number; fromTop: boolean }>();
+    const add = (from: number, to: number, fromTop: boolean) =>
+      segs.set(`${from}>${to}@${fromTop}`, { from, to, fromTop });
+
+    // 1. Locate this commit's tips. Several children may point at it, so it
+    //    can occupy several lanes; keep the first, converge the others.
+    const indices: number[] = [];
+    for (let i = 0; i < lanes.length; i++) {
+      if (lanes[i] === commit.hash) indices.push(i);
+    }
+    let lane: number;
+    const collapsed = new Set<number>();
+    if (indices.length > 0) {
+      lane = indices[0];
+      for (let k = 1; k < indices.length; k++) {
+        add(indices[k], lane, true);
+        lanes[indices[k]] = null;
+        collapsed.add(indices[k]);
+      }
+    } else {
+      // New branch tip: never fill a retired hole. Reusing lane 0 after it
+      // was nulled produces a disconnected "ghost" dot on the far left.
+      lane = lanes.length;
+      lanes.push(null);
+    }
+
+    // 2. Verticals for every lane that merely passes through this row.
+    for (let i = 0; i < before.length; i++) {
+      if (i !== lane && !collapsed.has(i) && before[i] != null) add(i, i, false);
+    }
+
+    // 3. Route the commit's own lane to its parents.
+    const parents = commit.parents;
+    if (parents.length === 0) {
+      lanes[lane] = null; // root: no outgoing line; incoming drawn by the row above
+    } else {
+      const [p1, ...others] = parents;
+      const j = lanes.indexOf(p1);
+      if (j !== -1) {
+        add(lane, j, false); // first parent already has a lane: merge into it
+        lanes[lane] = null;
+      } else {
+        lanes[lane] = p1;
+        add(lane, lane, false);
+      }
+      for (const p of others) {
+        const e = lanes.indexOf(p);
+        if (e !== -1) {
+          add(lane, e, false); // merge into the parent's existing lane
+        } else {
+          let k = lanes.indexOf(null);
+          if (k === -1) {
+            k = lanes.length;
+            lanes.push(null);
+          }
+          lanes[k] = p;
+          add(lane, k, false); // fork a new lane to the right
+        }
+      }
+    }
+
+    rows.push({
+      hash: commit.hash,
+      shortHash: commit.hash.slice(0, 7),
+      parents: commit.parents,
+      subject: commit.subject,
+      author: commit.author,
+      date: commit.date,
+      refs: commit.refs,
+      lane,
+      edges: [...segs.values()],
+    });
+  }
+
+  return rows;
+}
