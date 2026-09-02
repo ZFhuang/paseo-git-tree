@@ -90,6 +90,25 @@ function withAlpha(hex: string, alpha: string): string {
   return hex.length === 7 ? hex + alpha : hex;
 }
 
+/** Compact relative age: `just now`, `3h`, `2d`, `1w`, `5mo`, `3y`. Weeks
+ *  only cover 7–29 days; 30+ days collapse to months. */
+function relativeTime(iso: string, now = Date.now()): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const s = Math.max(0, Math.floor((now - t) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d`;
+  if (d < 30) return `${Math.floor(d / 7)}w`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}mo`;
+  return `${Math.max(1, Math.floor(d / 365))}y`;
+}
+
 const FLOAT_SHADOW = {
   boxShadow: "0 8px 28px rgba(0,0,0,0.38), 0 1px 0 rgba(255,255,255,0.04)",
 } as const;
@@ -1334,7 +1353,7 @@ const CommitRow = memo(function CommitRow({
               </Text>
             ) : null}
             <Text style={{ color: colors.fgMuted, fontSize: 10 }}>
-              {row.date ? row.date.slice(0, 10) : ""}
+              {row.date ? relativeTime(row.date) : ""}
             </Text>
           </View>
         </View>
