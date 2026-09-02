@@ -22,12 +22,28 @@ const CARD_RADIUS = 8;
 const CARD_BORDER = 1;
 const DOT_R = 4;
 const LINE_W = 2;
-const GRAPH_PAD_X = 10;
-/** Full width reserved for the graph area (7 lanes + padding). */
-const GRAPH_WIDTH = GRAPH_PAD_X + LANE_WIDTH * 7 + 8;
+const GRAPH_PAD_X = 8;
+/** Breathing room between the last lane and the commit text. */
+const GRAPH_PAD_RIGHT = 6;
 
 function laneX(lane: number): number {
   return GRAPH_PAD_X + lane * LANE_WIDTH;
+}
+
+function graphWidth(laneCount: number): number {
+  return GRAPH_PAD_X + Math.max(1, laneCount) * LANE_WIDTH + GRAPH_PAD_RIGHT;
+}
+
+function laneCountOf(rows: GitTreeRow[]): number {
+  let max = 0;
+  for (const row of rows) {
+    if (row.lane > max) max = row.lane;
+    for (const e of row.edges) {
+      if (e.from > max) max = e.from;
+      if (e.to > max) max = e.to;
+    }
+  }
+  return max + 1;
 }
 
 /** VS Code-like palette for lanes; cycles when a graph has many lanes. */
@@ -176,10 +192,12 @@ function GraphSlice({
   row,
   prevRow,
   height,
+  graphW,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
   height: number;
+  graphW: number;
 }) {
   const cy = CARD_BORDER + ROW_HEIGHT / 2;
   const bottom = Math.max(height, cy + DOT_R);
@@ -251,7 +269,7 @@ function GraphSlice({
         position: "absolute",
         left: 0,
         top: 0,
-        width: GRAPH_WIDTH,
+        width: graphW,
         height: bottom,
         zIndex: 2,
       }}
@@ -600,12 +618,14 @@ function CommitExpansion({
   theme,
   expandedFile,
   onToggleFile,
+  graphW,
 }: {
   directory: string;
   hash: string;
   theme: PluginWorkspacePanelProps["theme"];
   expandedFile: string | null;
   onToggleFile: (path: string) => void;
+  graphW: number;
 }) {
   const getDetail = useRpc(commitDetail);
   const getDiff = useRpc(commitDiff);
@@ -659,14 +679,14 @@ function CommitExpansion({
 
   if (!detail) {
     return (
-      <Text style={{ color: colors.fgMuted, fontSize: 12, paddingVertical: 10, paddingRight: 10, marginLeft: GRAPH_WIDTH }}>
+      <Text style={{ color: colors.fgMuted, fontSize: 12, paddingVertical: 10, paddingRight: 10, marginLeft: graphW }}>
         Loading…
       </Text>
     );
   }
   if (detail.error) {
     return (
-      <Text style={{ color: colors.removed, fontSize: 12, paddingVertical: 10, paddingRight: 10, marginLeft: GRAPH_WIDTH }}>
+      <Text style={{ color: colors.removed, fontSize: 12, paddingVertical: 10, paddingRight: 10, marginLeft: graphW }}>
         {detail.error}
       </Text>
     );
@@ -675,7 +695,7 @@ function CommitExpansion({
   return (
     <View
       style={{
-        marginLeft: GRAPH_WIDTH,
+        marginLeft: graphW,
         paddingTop: 8,
         paddingBottom: 12,
         paddingRight: 12,
@@ -757,6 +777,7 @@ function CommitExpansion({
 function CommitRow({
   row,
   prevRow,
+  graphW,
   colors,
   compact,
   expanded,
@@ -771,6 +792,7 @@ function CommitRow({
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
+  graphW: number;
   colors: {
     fg: string;
     fgMuted: string;
@@ -879,7 +901,7 @@ function CommitRow({
           flexDirection: "row",
           alignItems: "center",
           height: ROW_HEIGHT,
-          paddingLeft: GRAPH_WIDTH,
+          paddingLeft: graphW,
           paddingRight: compact ? 10 : 14,
         }}
       >
@@ -963,19 +985,20 @@ function CommitRow({
       </Pressable>
       {expanded ? (
         <View>
-          <View style={{ height: 1, backgroundColor: colors.hairline, marginLeft: GRAPH_WIDTH }} />
+          <View style={{ height: 1, backgroundColor: colors.hairline, marginLeft: graphW }} />
           <CommitExpansion
             directory={directory}
             hash={row.hash}
             theme={theme}
             expandedFile={expandedFile}
             onToggleFile={onToggleFile}
+            graphW={graphW}
           />
         </View>
       ) : null}
       </View>
       <View style={{ height: CARD_GAP }} />
-      <GraphSlice row={row} prevRow={prevRow} height={sliceH} />
+      <GraphSlice row={row} prevRow={prevRow} height={sliceH} graphW={graphW} />
     </View>
   );
 }
@@ -1119,6 +1142,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   }
 
   const rows = data?.rows ?? [];
+  const graphW = graphWidth(laneCountOf(rows));
   const heads = data?.heads ?? [];
   const colors = {
     fg: theme.colors.foreground,
@@ -1224,6 +1248,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
                 key={`${row.hash}-${i}`}
                 row={row}
                 prevRow={i > 0 ? rows[i - 1] : undefined}
+                graphW={graphW}
                 colors={colors}
                 compact={layout.compact}
                 expanded={expandedHash === row.hash}
