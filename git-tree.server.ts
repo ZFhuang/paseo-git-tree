@@ -180,8 +180,19 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
         deletions += d === "-" ? 0 : Number.parseInt(d, 10) || 0;
       }
       let untracked = 0;
+      const untrackedPaths: string[] = [];
       for (const line of statusOut.split("\n")) {
-        if (line.startsWith("??")) untracked++;
+        if (line.startsWith("??")) {
+          untracked++;
+          untrackedPaths.push(unquotePorcelainPath(line.slice(3)));
+        }
+      }
+      // Untracked files contribute their full line count as additions —
+      // `git diff HEAD` never sees them.
+      for (const p of untrackedPaths) {
+        const counts = await untrackedLineCounts(directory, p);
+        additions += counts.additions;
+        deletions += counts.deletions;
       }
       if (tracked > 0 || untracked > 0) {
         uncommitted = { count: tracked + untracked, additions, deletions, untracked };
@@ -278,13 +289,18 @@ async function worktreeFiles(directory: string): Promise<DiffFile[]> {
   const files = await diffFiles(directory, base);
   const seen = new Set(files.map((f) => f.path));
   const porcelain = await runGit(directory, ["status", "--porcelain", "--untracked-files=all"]).catch(() => "");
+  const pending: DiffFile[] = [];
   for (const line of porcelain.split("\n")) {
     if (!line.startsWith("??")) continue;
     const filePath = unquotePorcelainPath(line.slice(3));
     if (!filePath || seen.has(filePath)) continue;
-    files.push({ path: filePath, oldPath: null, status: "?", additions: 0, deletions: 0 });
+    // Untracked files never appear in `git diff HEAD`; count their lines so
+    // the card shows real +N instead of +0.
+    const counts = await untrackedLineCounts(directory, filePath);
+    pending.push({ path: filePath, oldPath: null, status: "?", additions: counts.additions, deletions: counts.deletions });
     seen.add(filePath);
   }
+  files.push(...pending);
   files.sort((a, b) => a.path.localeCompare(b.path));
   return files;
 }
@@ -294,6 +310,19 @@ async function worktreePatch(directory: string, filePath: string): Promise<strin
   if (vsHead.trim()) return vsHead;
   const emptyBlob = process.platform === "win32" ? "NUL" : "/dev/null";
   return runGit(directory, ["diff", "--no-index", "--", emptyBlob, filePath], 15_000, [1]).catch(() => "");
+}
+
+/** Line counts for an untracked (or otherwise un-diffable) file: every line
+ *  counts as an addition. Uses the same `--no-index` trick as worktreePatch
+ *  so CRLF/encoding handling matches what the inline diff renders. */
+async function untrackedLineCounts(directory: string, filePath: string): Promise<{ additions: number; deletions: number }> {
+  const emptyBlob = process.platform === "win32" ? "NUL" : "/dev/null";
+  const patch = await runGit(directory, ["diff", "--no-index", "--numstat", "--", emptyBlob, filePath], 15_000, [1]).catch(() => "");
+  const [a = "0", d = "0"] = patch.split("\n")[0]?.split("\t") ?? [];
+  return {
+    additions: a === "-" ? 0 : Number.parseInt(a, 10) || 0,
+    deletions: d === "-" ? 0 : Number.parseInt(d, 10) || 0,
+  };
 }
 
 export async function getCommitDetail(
