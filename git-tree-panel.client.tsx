@@ -22,6 +22,8 @@ import {
   type GitBranchOp,
   type GitTreeOutput,
   type GitTreeRow,
+  parseBranchRef,
+  splitRemoteRef,
 } from "./git-tree.shared";
 
 // --- Geometry ---------------------------------------------------------------
@@ -596,68 +598,107 @@ function ScopeMenu({
   );
 }
 
-type BranchHead = { name: string; hash: string; isCurrent: boolean };
+type BranchHead = { name: string; hash: string; isCurrent: boolean; remote: boolean };
 
-function BranchNameRow({
+type BranchOpRequest = {
+  op: GitBranchOp | "copy";
+  name?: string;
+  newName?: string;
+  force?: boolean;
+  checkOut?: boolean;
+};
+
+function BranchListRow({
   name,
   color,
   isCurrent,
-  open,
+  remote,
+  previewing,
   colors,
-  onPress,
-  children,
+  onPrimary,
+  onMore,
 }: {
   name: string;
   color: string;
   isCurrent: boolean;
-  open: boolean;
+  remote: boolean;
+  previewing: boolean;
   colors: FloatColors;
-  onPress: () => void;
-  children: React.ReactNode;
+  onPrimary: () => void;
+  onMore: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
   return (
-    <View>
-      <Pressable
-        onPress={onPress}
-        onHoverIn={() => setHovered(true)}
-        onHoverOut={() => setHovered(false)}
+    <Pressable
+      onPress={onPrimary}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onLongPress={onMore}
+      {...({
+        onContextMenu: (e: WebContextMenuEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onMore();
+        },
+      } as object)}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 4,
+        paddingVertical: 7,
+        backgroundColor: previewing || hovered ? colors.hover : "transparent",
+      }}
+    >
+      <View
         style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 8,
-          paddingHorizontal: 12,
-          paddingVertical: 8,
-          backgroundColor: open || hovered ? colors.hover : "transparent",
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: color,
+          flexShrink: 0,
+        }}
+      />
+      <Text
+        numberOfLines={1}
+        style={{
+          color: colors.fg,
+          fontSize: 12,
+          fontWeight: isCurrent || previewing ? "700" : "500",
+          flex: 1,
+          flexShrink: 1,
         }}
       >
-        <View
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 4,
-            backgroundColor: color,
-          }}
-        />
-        <Text
-          numberOfLines={1}
-          style={{
-            color: colors.fg,
-            fontSize: 12,
-            fontWeight: isCurrent ? "700" : "500",
-            flex: 1,
-            flexShrink: 1,
-          }}
-        >
-          {name}
-        </Text>
-        {isCurrent ? (
-          <Text style={{ color, fontSize: 10, fontWeight: "700" }}>current</Text>
-        ) : null}
-        <Icon name={open ? "ChevronDown" : "ChevronRight"} size={12} color={colors.fgMuted} />
+        {name}
+      </Text>
+      {remote ? (
+        <Text style={{ color: colors.fgMuted, fontSize: 10 }}>remote</Text>
+      ) : null}
+      {previewing ? (
+        <Text style={{ color, fontSize: 10, fontWeight: "700" }}>preview</Text>
+      ) : null}
+      {isCurrent ? (
+        <Text style={{ color, fontSize: 10, fontWeight: "700" }}>current</Text>
+      ) : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Actions for ${name}`}
+        onPress={(e) => {
+          (e as unknown as { stopPropagation?: () => void }).stopPropagation?.();
+          onMore();
+        }}
+        style={{
+          width: 28,
+          height: 28,
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: 6,
+        }}
+      >
+        <Text style={{ color: colors.fgMuted, fontSize: 16, lineHeight: 18 }}>⋯</Text>
       </Pressable>
-      {children}
-    </View>
+    </Pressable>
   );
 }
 
@@ -684,8 +725,8 @@ function BranchAction({
       onHoverOut={() => setHovered(false)}
       style={{
         paddingHorizontal: 10,
-        paddingVertical: 6,
-        marginHorizontal: 3,
+        paddingVertical: 7,
+        marginHorizontal: 4,
         borderRadius: 6,
         backgroundColor: hovered && !disabled ? colors.hover : "transparent",
         opacity: disabled ? 0.45 : 1,
@@ -702,35 +743,89 @@ function BranchAction({
   );
 }
 
+function BranchSectionLabel({ label, colors }: { label: string; colors: FloatColors }) {
+  return (
+    <Text
+      style={{
+        color: colors.fgMuted,
+        fontSize: 10,
+        fontWeight: "700",
+        textTransform: "uppercase" as const,
+        paddingHorizontal: 12,
+        paddingTop: 8,
+        paddingBottom: 2,
+      }}
+    >
+      {label}
+    </Text>
+  );
+}
+
 function BranchMenu({
   x,
   y,
   heads,
+  remotes,
+  preview,
   colors,
   busy,
   tintFor,
   onDismiss,
+  onPreview,
   onOp,
 }: {
   x: number;
   y: number;
   heads: BranchHead[];
+  remotes: string[];
+  preview: string | null;
   colors: FloatColors;
   busy: boolean;
   tintFor: (name: string) => string;
   onDismiss: () => void;
-  onOp: (op: GitBranchOp | "copy", name?: string) => void;
+  onPreview: (name: string) => void;
+  onOp: (req: BranchOpRequest) => void;
 }) {
-  const current = heads.find((h) => h.isCurrent);
-  const sorted = useMemo(() => {
-    const rest = heads.filter((h) => !h.isCurrent).slice().sort((a, b) => a.name.localeCompare(b.name));
-    return current ? [current, ...rest] : rest;
-  }, [heads, current]);
-
-  const [openName, setOpenName] = useState<string | null>(current?.name ?? null);
+  const current = heads.find((h) => h.isCurrent && !h.remote);
+  const localNames = useMemo(
+    () => new Set(heads.filter((h) => !h.remote).map((h) => h.name)),
+    [heads],
+  );
+  const [filter, setFilter] = useState("");
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [checkOutNew, setCheckOutNew] = useState(true);
+  const [active, setActive] = useState<BranchHead | null>(null);
+  const [renameTo, setRenameTo] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [confirm, setConfirm] = useState<"delete" | "rebase" | "push-force" | null>(null);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const match = (h: BranchHead) => !q || h.name.toLowerCase().includes(q);
+    const locals = heads
+      .filter((h) => !h.remote && match(h))
+      .slice()
+      .sort((a, b) => {
+        if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    const remoteHeads = heads
+      .filter((h) => h.remote && match(h))
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { locals, remoteHeads };
+  }, [heads, filter]);
+
+  const openActions = (h: BranchHead) => {
+    setActive(h);
+    setConfirm(null);
+    setRenaming(false);
+    setRenameTo(h.remote ? "" : h.name);
+    setCreating(false);
+  };
+
+  const localFamily = (h: BranchHead) => parseBranchRef(h.name, remotes)?.family ?? h.name;
 
   return (
     <>
@@ -743,49 +838,298 @@ function BranchMenu({
           position: "absolute",
           left: x,
           top: y,
-          width: 260,
-          maxHeight: 360,
+          width: 300,
+          maxHeight: 420,
           zIndex: 42,
           backgroundColor: colors.surface,
           borderRadius: CARD_RADIUS,
           borderWidth: 1,
           borderColor: colors.ring,
           paddingVertical: 4,
+          opacity: busy ? 0.7 : 1,
           ...FLOAT_SHADOW,
         }}
       >
-        <ScrollView nestedScrollEnabled>
-          <Pressable
-            onPress={() => {
-              setCreating((v) => !v);
-              setOpenName(null);
-              setConfirmDelete(null);
-            }}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-            }}
-          >
-            <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>+ New branch</Text>
-          </Pressable>
-          {creating ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingBottom: 8 }}>
+        {active ? (
+          <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={{ maxHeight: 412 }}>
+            <Pressable
+              onPress={() => {
+                setActive(null);
+                setConfirm(null);
+                setRenaming(false);
+              }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8 }}
+            >
+              <Text style={{ color: colors.fgMuted, fontSize: 12 }}>‹ Back</Text>
+              <View
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: tintFor(active.name),
+                }}
+              />
+              <Text numberOfLines={1} style={{ color: colors.fg, fontSize: 12, fontWeight: "600", flexShrink: 1 }}>
+                {active.name}
+              </Text>
+            </Pressable>
+            {active.isCurrent ? (
+              <>
+                <BranchAction
+                  label="Pull"
+                  hint="git pull"
+                  colors={colors}
+                  disabled={busy}
+                  onPress={() => onOp({ op: "pull" })}
+                />
+                {remotes.length > 0 ? (
+                  <>
+                    <BranchAction
+                      label="Push"
+                      hint={`git push -u ${remotes.includes("origin") ? "origin" : remotes[0]} ${active.name}`}
+                      colors={colors}
+                      disabled={busy}
+                      onPress={() => onOp({ op: "push", name: active.name })}
+                    />
+                    {confirm === "push-force" ? (
+                      <BranchAction
+                        label="Confirm force push"
+                        hint="git push --force-with-lease"
+                        colors={colors}
+                        danger
+                        disabled={busy}
+                        onPress={() => onOp({ op: "push", name: active.name, force: true })}
+                      />
+                    ) : (
+                      <BranchAction
+                        label="Force push…"
+                        hint="--force-with-lease"
+                        colors={colors}
+                        danger
+                        disabled={busy}
+                        onPress={() => setConfirm("push-force")}
+                      />
+                    )}
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <BranchAction
+                  label="Checkout"
+                  hint={
+                    active.remote
+                      ? localNames.has(localFamily(active))
+                        ? `git checkout ${localFamily(active)}`
+                        : `git checkout --track ${active.name}`
+                      : `git checkout ${active.name}`
+                  }
+                  colors={colors}
+                  disabled={busy}
+                  onPress={() => onOp({ op: "checkout", name: active.name })}
+                />
+                {current && !active.remote ? (
+                  <>
+                    <BranchAction
+                      label={`Merge into ${current.name}`}
+                      hint={`git merge ${active.name}`}
+                      colors={colors}
+                      disabled={busy}
+                      onPress={() => onOp({ op: "merge", name: active.name })}
+                    />
+                    {confirm === "rebase" ? (
+                      <BranchAction
+                        label={`Confirm rebase ${current.name}`}
+                        hint={`git rebase ${active.name}`}
+                        colors={colors}
+                        danger
+                        disabled={busy}
+                        onPress={() => onOp({ op: "rebase", name: active.name })}
+                      />
+                    ) : (
+                      <BranchAction
+                        label={`Rebase ${current.name} onto this`}
+                        hint={`git rebase ${active.name}`}
+                        colors={colors}
+                        disabled={busy}
+                        onPress={() => setConfirm("rebase")}
+                      />
+                    )}
+                  </>
+                ) : null}
+                {active.remote && current ? (
+                  <BranchAction
+                    label={`Pull into ${current.name}`}
+                    hint={(() => {
+                      const parts = splitRemoteRef(active.name, remotes);
+                      return parts ? `git pull ${parts.remote} ${parts.branch}` : `git pull ${active.name}`;
+                    })()}
+                    colors={colors}
+                    disabled={busy}
+                    onPress={() => onOp({ op: "pull", name: active.name })}
+                  />
+                ) : null}
+                {active.remote && localNames.has(localFamily(active)) && current?.name !== localFamily(active) ? (
+                  <BranchAction
+                    label={`Fetch into ${localFamily(active)}`}
+                    hint={`git fetch … ${localFamily(active)}:${localFamily(active)}`}
+                    colors={colors}
+                    disabled={busy}
+                    onPress={() => onOp({ op: "fetch", name: active.name })}
+                  />
+                ) : null}
+                {!active.remote && remotes.length > 0 ? (
+                  <>
+                    <BranchAction
+                      label="Push"
+                      hint="git push -u"
+                      colors={colors}
+                      disabled={busy}
+                      onPress={() => onOp({ op: "push", name: active.name })}
+                    />
+                    {confirm === "push-force" ? (
+                      <BranchAction
+                        label="Confirm force push"
+                        hint="git push --force-with-lease"
+                        colors={colors}
+                        danger
+                        disabled={busy}
+                        onPress={() => onOp({ op: "push", name: active.name, force: true })}
+                      />
+                    ) : (
+                      <BranchAction
+                        label="Force push…"
+                        hint="--force-with-lease"
+                        colors={colors}
+                        danger
+                        disabled={busy}
+                        onPress={() => setConfirm("push-force")}
+                      />
+                    )}
+                  </>
+                ) : null}
+              </>
+            )}
+            {!active.remote ? (
+              renaming ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6 }}>
+                  <TextInput
+                    value={renameTo}
+                    onChangeText={setRenameTo}
+                    placeholder="new-name"
+                    placeholderTextColor={colors.fgMuted}
+                    autoFocus
+                    editable={!busy}
+                    onSubmitEditing={() => {
+                      const n = renameTo.trim();
+                      if (n) onOp({ op: "rename", name: active.name, newName: n });
+                    }}
+                    style={{
+                      flex: 1,
+                      color: colors.fg,
+                      fontSize: 12,
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      borderWidth: 1,
+                      borderColor: colors.ring,
+                      backgroundColor: "rgba(0,0,0,0.18)",
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const n = renameTo.trim();
+                      if (n) onOp({ op: "rename", name: active.name, newName: n });
+                    }}
+                    disabled={busy || !renameTo.trim() || renameTo.trim() === active.name}
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      backgroundColor: colors.hover,
+                      opacity: busy || !renameTo.trim() || renameTo.trim() === active.name ? 0.45 : 1,
+                    }}
+                  >
+                    <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Rename</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <BranchAction
+                  label="Rename…"
+                  hint="git branch -m"
+                  colors={colors}
+                  disabled={busy}
+                  onPress={() => {
+                    setRenaming(true);
+                    setConfirm(null);
+                  }}
+                />
+              )
+            ) : null}
+            <BranchAction
+              label="Copy name"
+              hint={active.name}
+              colors={colors}
+              disabled={busy}
+              onPress={() => onOp({ op: "copy", name: active.name })}
+            />
+            {!active.isCurrent ? (
+              confirm === "delete" ? (
+                active.remote ? (
+                  <BranchAction
+                    label="Confirm delete remote"
+                    hint="git push --delete"
+                    colors={colors}
+                    danger
+                    disabled={busy}
+                    onPress={() => onOp({ op: "delete", name: active.name })}
+                  />
+                ) : (
+                  <>
+                    <BranchAction
+                      label="Confirm delete"
+                      hint={`git branch -d ${active.name}`}
+                      colors={colors}
+                      danger
+                      disabled={busy}
+                      onPress={() => onOp({ op: "delete", name: active.name })}
+                    />
+                    <BranchAction
+                      label="Force delete"
+                      hint={`git branch -D ${active.name}`}
+                      colors={colors}
+                      danger
+                      disabled={busy}
+                      onPress={() => onOp({ op: "delete", name: active.name, force: true })}
+                    />
+                  </>
+                )
+              ) : (
+                <BranchAction
+                  label={active.remote ? "Delete remote branch…" : "Delete branch…"}
+                  hint={active.remote ? "git push --delete" : "git branch -d"}
+                  colors={colors}
+                  danger
+                  disabled={busy}
+                  onPress={() => {
+                    setConfirm("delete");
+                    setRenaming(false);
+                  }}
+                />
+              )
+            ) : null}
+          </ScrollView>
+        ) : (
+          <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={{ maxHeight: 412 }}>
+            <View style={{ paddingHorizontal: 10, paddingTop: 6, paddingBottom: 4 }}>
               <TextInput
-                value={newName}
-                onChangeText={setNewName}
-                placeholder="branch-name"
+                value={filter}
+                onChangeText={setFilter}
+                placeholder="Search branches"
                 placeholderTextColor={colors.fgMuted}
                 autoFocus
                 editable={!busy}
-                onSubmitEditing={() => {
-                  const n = newName.trim();
-                  if (n) onOp("create", n);
-                }}
                 style={{
-                  flex: 1,
                   color: colors.fg,
                   fontSize: 12,
                   paddingHorizontal: 8,
@@ -796,96 +1140,112 @@ function BranchMenu({
                   backgroundColor: "rgba(0,0,0,0.18)",
                 }}
               />
-              <Pressable
-                onPress={() => {
-                  const n = newName.trim();
-                  if (n) onOp("create", n);
-                }}
-                disabled={busy || !newName.trim()}
-                style={{
-                  paddingHorizontal: 8,
-                  paddingVertical: 6,
-                  borderRadius: 6,
-                  backgroundColor: colors.hover,
-                  opacity: busy || !newName.trim() ? 0.45 : 1,
-                }}
-              >
-                <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Create</Text>
-              </Pressable>
             </View>
-          ) : null}
+            <Text style={{ color: colors.fgMuted, fontSize: 10, paddingHorizontal: 12, paddingBottom: 4 }}>
+              Click to preview · right-click or ⋯ to act
+            </Text>
+            <Pressable
+              onPress={() => {
+                setCreating((v) => !v);
+                setActive(null);
+              }}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+              }}
+            >
+              <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>+ Create branch…</Text>
+            </Pressable>
+            {creating ? (
+              <View style={{ paddingHorizontal: 10, paddingBottom: 8, gap: 6 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <TextInput
+                    value={newName}
+                    onChangeText={setNewName}
+                    placeholder="branch-name"
+                    placeholderTextColor={colors.fgMuted}
+                    autoFocus
+                    editable={!busy}
+                    onSubmitEditing={() => {
+                      const n = newName.trim();
+                      if (n) onOp({ op: "create", name: n, checkOut: checkOutNew });
+                    }}
+                    style={{
+                      flex: 1,
+                      color: colors.fg,
+                      fontSize: 12,
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      borderWidth: 1,
+                      borderColor: colors.ring,
+                      backgroundColor: "rgba(0,0,0,0.18)",
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const n = newName.trim();
+                      if (n) onOp({ op: "create", name: n, checkOut: checkOutNew });
+                    }}
+                    disabled={busy || !newName.trim()}
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      backgroundColor: colors.hover,
+                      opacity: busy || !newName.trim() ? 0.45 : 1,
+                    }}
+                  >
+                    <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Create</Text>
+                  </Pressable>
+                </View>
+                <Pressable
+                  onPress={() => setCheckOutNew((v) => !v)}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 2 }}
+                >
+                  <Text style={{ color: colors.fg, fontSize: 12 }}>{checkOutNew ? "☑" : "☐"} Check out after create</Text>
+                </Pressable>
+              </View>
+            ) : null}
 
-          {sorted.map((h) => {
-            const color = tintFor(h.name);
-            const open = openName === h.name;
-            return (
-              <BranchNameRow
-                key={h.name}
+            {filtered.locals.length > 0 ? <BranchSectionLabel label="Local" colors={colors} /> : null}
+            {filtered.locals.map((h) => (
+              <BranchListRow
+                key={`local:${h.name}`}
                 name={h.name}
-                color={color}
+                color={tintFor(h.name)}
                 isCurrent={h.isCurrent}
-                open={open}
+                remote={false}
+                previewing={preview === h.name}
                 colors={colors}
-                onPress={() => {
-                  setOpenName(open ? null : h.name);
-                  setConfirmDelete(null);
-                  setCreating(false);
-                }}
-              >
-                {open ? (
-                  <View style={{ paddingBottom: 4 }}>
-                    {h.isCurrent ? (
-                      <BranchAction
-                        label="Pull"
-                        hint="git pull"
-                        colors={colors}
-                        disabled={busy}
-                        onPress={() => onOp("pull")}
-                      />
-                    ) : (
-                      <>
-                        <BranchAction
-                          label="Checkout"
-                          hint={`git checkout ${h.name}`}
-                          colors={colors}
-                          disabled={busy}
-                          onPress={() => onOp("checkout", h.name)}
-                        />
-                        <BranchAction
-                          label={current ? `Merge into ${current.name}` : "Merge"}
-                          hint={`git merge ${h.name}`}
-                          colors={colors}
-                          disabled={busy}
-                          onPress={() => onOp("merge", h.name)}
-                        />
-                      </>
-                    )}
-                    <BranchAction
-                      label="Copy name"
-                      hint={h.name}
-                      colors={colors}
-                      disabled={busy}
-                      onPress={() => onOp("copy", h.name)}
-                    />
-                    {!h.isCurrent ? (
-                      <BranchAction
-                        label={confirmDelete === h.name ? "Confirm delete" : "Delete branch"}
-                        hint={confirmDelete === h.name ? "git branch -d  ·  cannot be undone" : `git branch -d ${h.name}`}
-                        colors={colors}
-                        danger
-                        disabled={busy}
-                        onPress={() => {
-                          if (confirmDelete === h.name) onOp("delete", h.name);
-                          else setConfirmDelete(h.name);
-                        }}
-                      />
-                    ) : null}
-                  </View>
-                ) : null}
-              </BranchNameRow>
-            );
-          })}
-        </ScrollView>
+                onPrimary={() => onPreview(h.name)}
+                onMore={() => openActions(h)}
+              />
+            ))}
+            {filtered.remoteHeads.length > 0 ? <BranchSectionLabel label="Remote" colors={colors} /> : null}
+            {filtered.remoteHeads.map((h) => (
+              <BranchListRow
+                key={`remote:${h.name}`}
+                name={h.name}
+                color={tintFor(h.name)}
+                isCurrent={false}
+                remote
+                previewing={preview === h.name}
+                colors={colors}
+                onPrimary={() => onPreview(h.name)}
+                onMore={() => openActions(h)}
+              />
+            ))}
+            {filtered.locals.length === 0 && filtered.remoteHeads.length === 0 ? (
+              <Text style={{ color: colors.fgMuted, fontSize: 12, paddingHorizontal: 12, paddingVertical: 10 }}>
+                No matching branches
+              </Text>
+            ) : null}
+          </ScrollView>
+        )}
       </View>
     </>
   );
@@ -2001,6 +2361,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
   const [scope, setScope] = useState<TreeScope>("all");
+  const [previewRef, setPreviewRef] = useState<string | null>(null);
   const [scopeMenu, setScopeMenu] = useState<{ x: number; y: number } | null>(null);
   const [scopeHover, setScopeHover] = useState(false);
   const [refreshHover, setRefreshHover] = useState(false);
@@ -2010,11 +2371,17 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const refresh = useCallback(() => {
     if (!directory) return;
     setLoading(true);
-    getTree({ directory, limit: COMMIT_LIMIT, scope, ...(debouncedPath ? { path: debouncedPath } : {}) })
+    getTree({
+      directory,
+      limit: COMMIT_LIMIT,
+      scope,
+      ...(debouncedPath ? { path: debouncedPath } : {}),
+      ...(previewRef ? { preview: previewRef } : {}),
+    })
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [directory, getTree, scope, debouncedPath]);
+  }, [directory, getTree, scope, debouncedPath, previewRef]);
 
   useEffect(() => {
     refresh();
@@ -2109,7 +2476,10 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const handleHideTip = useCallback(() => setTip(null), []);
 
   const openBranchMenu = useCallback(() => {
-    if (branchMenu) return;
+    if (branchMenu) {
+      setBranchMenu(null);
+      return;
+    }
     menuOpen.current = false;
     setMenu(null);
     setTip(null);
@@ -2121,7 +2491,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       return;
     }
     node.measureInWindow((x, y, _w, h) => {
-      placeAt(x, y + h + 6, 268, 320, (lx, ly) => setBranchMenu({ x: lx, y: ly }));
+      placeAt(x, y + h + 6, 308, 420, (lx, ly) => setBranchMenu({ x: lx, y: ly }));
     });
   }, [branchMenu, placeAt]);
 
@@ -2143,10 +2513,11 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   }, [scopeMenu, placeAt]);
 
   const handleBranchOp = useCallback(
-    (op: GitBranchOp | "copy", name?: string) => {
+    (req: BranchOpRequest) => {
+      const op = req.op;
       if (op === "copy") {
-        if (!name) return;
-        void copyToClipboard(name).then((ok) => {
+        if (!req.name) return;
+        void copyToClipboard(req.name).then((ok) => {
           if (ok) toast.show("Copied branch name");
           else toast.error("Couldn't copy");
         });
@@ -2154,28 +2525,45 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       }
       if (!directory || branchBusy) return;
       setBranchBusy(true);
-      void runBranch({ directory, op, name })
+      void runBranch({
+        directory,
+        op,
+        name: req.name,
+        newName: req.newName,
+        force: req.force,
+        checkOut: req.checkOut,
+      })
         .then((result) => {
           if (result.error) {
             toast.error(result.error);
             return;
           }
           const done: Record<GitBranchOp, string> = {
-            checkout: name ? `Switched to ${name}` : "Checked out",
-            merge: name ? `Merged ${name}` : "Merged",
-            delete: name ? `Deleted ${name}` : "Deleted",
-            pull: "Pulled",
-            create: name ? `Created ${name}` : "Created branch",
+            checkout: req.name ? `Switched to ${req.name}` : "Checked out",
+            merge: req.name ? `Merged ${req.name}` : "Merged",
+            delete: req.name ? `Deleted ${req.name}` : "Deleted",
+            pull: req.name ? `Pulled ${req.name}` : "Pulled",
+            create: req.name ? `Created ${req.name}` : "Created branch",
+            rename: req.newName ? `Renamed to ${req.newName}` : "Renamed",
+            rebase: req.name ? `Rebased onto ${req.name}` : "Rebased",
+            push: req.force ? "Force pushed" : req.name ? `Pushed ${req.name}` : "Pushed",
+            fetch: req.name ? `Fetched ${req.name}` : "Fetched",
           };
           toast.show(done[op]);
           refresh();
-          if (op !== "delete") setBranchMenu(null);
+          if (op === "checkout" || (op === "create" && req.checkOut !== false)) setPreviewRef(null);
+          setBranchMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
         .finally(() => setBranchBusy(false));
     },
     [directory, branchBusy, runBranch, toast, refresh],
   );
+
+  const handlePreview = useCallback((name: string) => {
+    setPreviewRef((cur) => (cur === name ? null : name));
+    setBranchMenu(null);
+  }, []);
 
   const colors: RowColors = useMemo(
     () => ({
@@ -2283,13 +2671,15 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       <View style={styles.header}>
         <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
           <Text style={styles.title}>Git Tree</Text>
-          {rows.length > 0 ? (
+          {previewRef || rows.length > 0 ? (
             <Text style={styles.subtitle}>
-              {queryTrim
-                ? pathFilter
-                  ? `commits touching "${pathFilter}"…`
-                  : `${rows.length} of ${allRows.length} commits match "${query.trim()}"`
-                : `${rows.length} commit${rows.length === 1 ? "" : "s"}`}
+              {previewRef
+                ? `previewing ${previewRef}${rows.length > 0 ? ` · ${rows.length} commit${rows.length === 1 ? "" : "s"}` : ""}`
+                : queryTrim
+                  ? pathFilter
+                    ? `commits touching "${pathFilter}"…`
+                    : `${rows.length} of ${allRows.length} commits match "${query.trim()}"`
+                  : `${rows.length} commit${rows.length === 1 ? "" : "s"}`}
             </Text>
           ) : null}
         </View>
@@ -2476,7 +2866,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           compareBase={compareBase}
           compareTarget={compareTarget}
           onCompareClick={handleCompareClick}
-          uncommitted={data?.uncommitted ?? null}
+          uncommitted={
+            previewRef && previewRef !== currentHead?.name ? null : (data?.uncommitted ?? null)
+          }
           directory={directory ?? ""}
           theme={theme}
           onToggle={toggleCommit}
@@ -2548,10 +2940,13 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           x={branchMenu.x}
           y={branchMenu.y}
           heads={heads}
+          remotes={remotes}
+          preview={previewRef}
           colors={floatColors}
           busy={branchBusy}
           tintFor={tintFor}
           onDismiss={() => setBranchMenu(null)}
+          onPreview={handlePreview}
           onOp={handleBranchOp}
         />
       ) : null}
@@ -2563,6 +2958,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           colors={floatColors}
           onDismiss={() => setScopeMenu(null)}
           onSelect={(next) => {
+            setPreviewRef(null);
             setScope(next);
             setScopeMenu(null);
           }}

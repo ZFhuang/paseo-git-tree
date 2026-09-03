@@ -7,7 +7,7 @@
 
 - Explorer 侧边栏 tab（也可以作为普通 workspace tab 打开）
 - 窗口化渲染分支拓扑（默认 500 条，最多 2000），展开卡片时点和线位置不变
-- 顶部当前分支是下拉菜单：按分支着色，可 checkout / pull / merge / 新建 / 删除 / 复制分支名
+- 顶部当前分支是下拉菜单：左键预览该分支历史（不 checkout），右键或 ⋯ 打开操作（checkout / merge / rebase / push / pull / fetch / rename / delete）
 - 显示 commit 主题、作者、相对时间、ref 装饰（HEAD / 分支名 / tag），分支名与下拉使用同一套颜色
 - 范围切换：Branch（当前分支）/ Local（所有本地分支）/ All（含 remote）
 - 搜索框：按 message / 作者 / hash / 分支名过滤；`f: <路径>` 按文件过滤（覆盖已加载窗口外的历史）
@@ -42,7 +42,7 @@ paseo plugin install "<absolute-path>/paseo-git-tree"
 
 对比：Ctrl/Cmd 点击第一个 commit 设为基点（行上标 ⇔ base），再 Ctrl/Cmd 点击第二个 commit 展开两者的逐文件差异；再点基点本身取消。
 
-分支操作：点标题栏里带颜色的当前分支，展开下拉后点某个分支再选 Checkout / Pull / Merge / Delete。新建分支用下拉里的 **+ New branch**。删除需要点两次确认，且走 `git branch -d`（未合并的分支会报错，不会强制删）。
+分支操作：点标题栏里带颜色的当前分支。左键某个分支只预览它的提交图（不切换 HEAD）；再点一次取消预览。Checkout 以及 merge / rebase / push / pull / fetch / rename / delete 都在右键或 ⋯ 菜单里。远程 checkout 会 `git checkout --track` 或切到已有本地分支。新建分支可选择是否立刻 checkout。
 
 ## 类型检查
 
