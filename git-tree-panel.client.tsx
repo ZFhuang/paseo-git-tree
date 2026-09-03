@@ -9,6 +9,7 @@ import {
   commitDiff,
   computeGraph,
   gitBranchOp,
+  gitCommitOp,
   gitTree,
   graphColor,
   assignRefColors,
@@ -20,6 +21,7 @@ import {
   type TreeScope,
   type CommitDiffOutput,
   type GitBranchOp,
+  type GitCommitOp,
   type GitTreeOutput,
   type GitTreeRow,
   parseBranchRef,
@@ -163,6 +165,51 @@ type WebContextMenuEvent = {
   stopPropagation(): void;
   nativeEvent: { pageX: number; pageY: number };
 };
+
+/** Stop Paseo's host menu. Do not stopPropagation in capture so row handlers still run. */
+function suppressHostMenu(e: WebContextMenuEvent) {
+  e.preventDefault();
+}
+
+const hostMenuBlock = {
+  onContextMenuCapture: (e: WebContextMenuEvent) => suppressHostMenu(e),
+  onContextMenu: (e: WebContextMenuEvent) => {
+    suppressHostMenu(e);
+    e.stopPropagation();
+  },
+} as object;
+
+function bindContextMenu(open: (pageX: number, pageY: number) => void) {
+  return {
+    onContextMenuCapture: (e: WebContextMenuEvent) => suppressHostMenu(e),
+    onContextMenu: (e: WebContextMenuEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      open(e.nativeEvent.pageX, e.nativeEvent.pageY);
+    },
+  } as object;
+}
+
+/** Full-panel dismiss layer. Right-click here closes our menu and never opens the host's. */
+function MenuScrim({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <Pressable
+      onPress={onDismiss}
+      {...({
+        onContextMenuCapture: (e: WebContextMenuEvent) => {
+          suppressHostMenu(e);
+          onDismiss();
+        },
+        onContextMenu: (e: WebContextMenuEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onDismiss();
+        },
+      } as object)}
+      style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
+    />
+  );
+}
 
 /**
  * One segment between two points in the slice's local coordinate space.
@@ -447,50 +494,262 @@ function CommitMenu({
   x,
   y,
   row,
+  currentName,
   colors,
+  busy,
   onCopy,
+  onAct,
   onDismiss,
 }: {
   x: number;
   y: number;
   row: GitTreeRow;
+  currentName: string | null;
   colors: FloatColors;
+  busy: boolean;
   onCopy: (kind: "message" | "hash") => void;
+  onAct: (req: {
+    op: GitCommitOp;
+    hash: string;
+    name?: string;
+    mode?: "soft" | "mixed" | "hard";
+    checkOut?: boolean;
+  }) => void;
   onDismiss: () => void;
 }) {
+  const uncommitted = isUncommittedHash(row.hash);
+  const [creating, setCreating] = useState(false);
+  const [tagging, setTagging] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [checkOutNew, setCheckOutNew] = useState(true);
+  const [confirm, setConfirm] = useState<"revert" | "rebase" | "reset-hard" | null>(null);
+
   return (
     <>
-      <Pressable
-        onPress={onDismiss}
-        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
-      />
+      <MenuScrim onDismiss={onDismiss} />
       <View
+        {...hostMenuBlock}
         style={{
           position: "absolute",
           left: x,
           top: y,
-          minWidth: 200,
+          width: 280,
+          maxHeight: 380,
           zIndex: 42,
           backgroundColor: colors.surface,
           borderRadius: CARD_RADIUS,
           borderWidth: 1,
           borderColor: colors.ring,
           paddingVertical: 4,
+          opacity: busy ? 0.7 : 1,
           ...FLOAT_SHADOW,
         }}
       >
-        <MenuItem
-          label="Copy commit message"
-          hint={row.subject}
-          colors={colors}
-          onPress={() => onCopy("message")}
-        />
-        <MenuItem
-          label="Copy commit hash"
-          hint={row.shortHash}
-          colors={colors}
-          onPress={() => onCopy("hash")}
-        />
+        <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={{ maxHeight: 372 }}>
+          {uncommitted ? null : (
+            <>
+              <Pressable
+                onPress={() => {
+                  setCreating((v) => !v);
+                  setTagging(false);
+                  setConfirm(null);
+                }}
+                style={{ paddingHorizontal: 12, paddingVertical: 8 }}
+              >
+                <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Create branch…</Text>
+              </Pressable>
+              {creating ? (
+                <View style={{ paddingHorizontal: 10, paddingBottom: 8, gap: 6 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <TextInput
+                      value={newName}
+                      onChangeText={setNewName}
+                      placeholder="branch-name"
+                      placeholderTextColor={colors.fgMuted}
+                      autoFocus
+                      editable={!busy}
+                      onSubmitEditing={() => {
+                        const n = newName.trim();
+                        if (n) onAct({ op: "create-branch", hash: row.hash, name: n, checkOut: checkOutNew });
+                      }}
+                      style={{
+                        flex: 1,
+                        color: colors.fg,
+                        fontSize: 12,
+                        paddingHorizontal: 8,
+                        paddingVertical: 6,
+                        borderRadius: 6,
+                        borderWidth: 1,
+                        borderColor: colors.ring,
+                        backgroundColor: "rgba(0,0,0,0.18)",
+                      }}
+                    />
+                    <Pressable
+                      onPress={() => {
+                        const n = newName.trim();
+                        if (n) onAct({ op: "create-branch", hash: row.hash, name: n, checkOut: checkOutNew });
+                      }}
+                      disabled={busy || !newName.trim()}
+                      style={{
+                        paddingHorizontal: 8,
+                        paddingVertical: 6,
+                        borderRadius: 6,
+                        backgroundColor: colors.hover,
+                        opacity: busy || !newName.trim() ? 0.45 : 1,
+                      }}
+                    >
+                      <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Create</Text>
+                    </Pressable>
+                  </View>
+                  <Pressable onPress={() => setCheckOutNew((v) => !v)}>
+                    <Text style={{ color: colors.fg, fontSize: 12 }}>{checkOutNew ? "☑" : "☐"} Check out after create</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+              <MenuItem
+                label="Checkout this commit"
+                hint="detached HEAD"
+                colors={colors}
+                onPress={() => onAct({ op: "checkout", hash: row.hash })}
+              />
+              <MenuItem
+                label="Cherry pick"
+                hint={`git cherry-pick ${row.shortHash}`}
+                colors={colors}
+                onPress={() => onAct({ op: "cherry-pick", hash: row.hash })}
+              />
+              {confirm === "revert" ? (
+                <MenuItem
+                  label="Confirm revert"
+                  hint={`git revert ${row.shortHash}`}
+                  colors={colors}
+                  onPress={() => onAct({ op: "revert", hash: row.hash })}
+                />
+              ) : (
+                <MenuItem
+                  label="Revert…"
+                  hint="creates a reverting commit"
+                  colors={colors}
+                  onPress={() => setConfirm("revert")}
+                />
+              )}
+              {currentName ? (
+                <MenuItem
+                  label={`Merge into ${currentName}`}
+                  hint={`git merge ${row.shortHash}`}
+                  colors={colors}
+                  onPress={() => onAct({ op: "merge", hash: row.hash })}
+                />
+              ) : null}
+              {confirm === "rebase" && currentName ? (
+                <MenuItem
+                  label={`Confirm rebase ${currentName}`}
+                  hint={`git rebase ${row.shortHash}`}
+                  colors={colors}
+                  onPress={() => onAct({ op: "rebase", hash: row.hash })}
+                />
+              ) : currentName ? (
+                <MenuItem
+                  label={`Rebase ${currentName} onto this`}
+                  hint={`git rebase ${row.shortHash}`}
+                  colors={colors}
+                  onPress={() => setConfirm("rebase")}
+                />
+              ) : null}
+              {currentName ? (
+                <>
+                  <MenuItem
+                    label={`Reset ${currentName} here`}
+                    hint="git reset --mixed"
+                    colors={colors}
+                    onPress={() => onAct({ op: "reset", hash: row.hash, mode: "mixed" })}
+                  />
+                  {confirm === "reset-hard" ? (
+                    <MenuItem
+                      label="Confirm hard reset"
+                      hint="git reset --hard · discards worktree"
+                      colors={colors}
+                      onPress={() => onAct({ op: "reset", hash: row.hash, mode: "hard" })}
+                    />
+                  ) : (
+                    <MenuItem
+                      label="Hard reset…"
+                      hint="git reset --hard"
+                      colors={colors}
+                      onPress={() => setConfirm("reset-hard")}
+                    />
+                  )}
+                </>
+              ) : null}
+              <Pressable
+                onPress={() => {
+                  setTagging((v) => !v);
+                  setCreating(false);
+                  setConfirm(null);
+                  setNewName("");
+                }}
+                style={{ paddingHorizontal: 12, paddingVertical: 8 }}
+              >
+                <Text style={{ color: colors.fg, fontSize: 12 }}>Add tag…</Text>
+              </Pressable>
+              {tagging ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingBottom: 8 }}>
+                  <TextInput
+                    value={newName}
+                    onChangeText={setNewName}
+                    placeholder="tag-name"
+                    placeholderTextColor={colors.fgMuted}
+                    autoFocus
+                    editable={!busy}
+                    onSubmitEditing={() => {
+                      const n = newName.trim();
+                      if (n) onAct({ op: "tag", hash: row.hash, name: n });
+                    }}
+                    style={{
+                      flex: 1,
+                      color: colors.fg,
+                      fontSize: 12,
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      borderWidth: 1,
+                      borderColor: colors.ring,
+                      backgroundColor: "rgba(0,0,0,0.18)",
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const n = newName.trim();
+                      if (n) onAct({ op: "tag", hash: row.hash, name: n });
+                    }}
+                    disabled={busy || !newName.trim()}
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      backgroundColor: colors.hover,
+                      opacity: busy || !newName.trim() ? 0.45 : 1,
+                    }}
+                  >
+                    <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>Tag</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </>
+          )}
+          <MenuItem
+            label="Copy commit message"
+            hint={row.subject}
+            colors={colors}
+            onPress={() => onCopy("message")}
+          />
+          <MenuItem
+            label="Copy commit hash"
+            hint={row.shortHash}
+            colors={colors}
+            onPress={() => onCopy("hash")}
+          />
+        </ScrollView>
       </View>
     </>
   );
@@ -515,11 +774,9 @@ function FileMenu({
 }) {
   return (
     <>
-      <Pressable
-        onPress={onDismiss}
-        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
-      />
+      <MenuScrim onDismiss={onDismiss} />
       <View
+        {...hostMenuBlock}
         style={{
           position: "absolute",
           left: x,
@@ -565,11 +822,9 @@ function ScopeMenu({
 }) {
   return (
     <>
-      <Pressable
-        onPress={onDismiss}
-        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
-      />
+      <MenuScrim onDismiss={onDismiss} />
       <View
+        {...hostMenuBlock}
         style={{
           position: "absolute",
           left: x,
@@ -599,6 +854,18 @@ function ScopeMenu({
 }
 
 type BranchHead = { name: string; hash: string; isCurrent: boolean; remote: boolean };
+
+function resolveHead(
+  name: string,
+  heads: BranchHead[],
+  hash: string,
+  remotes: string[],
+): BranchHead {
+  const found = heads.find((h) => h.name === name);
+  if (found) return found;
+  const parsed = parseBranchRef(name, remotes);
+  return { name, hash, isCurrent: false, remote: parsed?.remote ?? false };
+}
 
 type BranchOpRequest = {
   op: GitBranchOp | "copy";
@@ -634,13 +901,7 @@ function BranchListRow({
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onLongPress={onMore}
-      {...({
-        onContextMenu: (e: WebContextMenuEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onMore();
-        },
-      } as object)}
+      {...bindContextMenu(() => onMore())}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -767,6 +1028,7 @@ function BranchMenu({
   heads,
   remotes,
   preview,
+  focus,
   colors,
   busy,
   tintFor,
@@ -779,6 +1041,8 @@ function BranchMenu({
   heads: BranchHead[];
   remotes: string[];
   preview: string | null;
+  /** When set, skip the picker and open Git Graph actions for this ref. */
+  focus?: BranchHead;
   colors: FloatColors;
   busy: boolean;
   tintFor: (name: string) => string;
@@ -795,7 +1059,7 @@ function BranchMenu({
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [checkOutNew, setCheckOutNew] = useState(true);
-  const [active, setActive] = useState<BranchHead | null>(null);
+  const [active, setActive] = useState<BranchHead | null>(focus ?? null);
   const [renameTo, setRenameTo] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [confirm, setConfirm] = useState<"delete" | "rebase" | "push-force" | null>(null);
@@ -829,11 +1093,9 @@ function BranchMenu({
 
   return (
     <>
-      <Pressable
-        onPress={onDismiss}
-        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
-      />
+      <MenuScrim onDismiss={onDismiss} />
       <View
+        {...hostMenuBlock}
         style={{
           position: "absolute",
           left: x,
@@ -852,6 +1114,23 @@ function BranchMenu({
       >
         {active ? (
           <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled" style={{ maxHeight: 412 }}>
+            {focus ? (
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8 }}
+              >
+                <View
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: tintFor(active.name),
+                  }}
+                />
+                <Text numberOfLines={1} style={{ color: colors.fg, fontSize: 12, fontWeight: "600", flexShrink: 1 }}>
+                  {active.name}
+                </Text>
+              </View>
+            ) : (
             <Pressable
               onPress={() => {
                 setActive(null);
@@ -873,46 +1152,29 @@ function BranchMenu({
                 {active.name}
               </Text>
             </Pressable>
+            )}
             {active.isCurrent ? (
-              <>
-                <BranchAction
-                  label="Pull"
-                  hint="git pull"
-                  colors={colors}
-                  disabled={busy}
-                  onPress={() => onOp({ op: "pull" })}
-                />
-                {remotes.length > 0 ? (
-                  <>
-                    <BranchAction
-                      label="Push"
-                      hint={`git push -u ${remotes.includes("origin") ? "origin" : remotes[0]} ${active.name}`}
-                      colors={colors}
-                      disabled={busy}
-                      onPress={() => onOp({ op: "push", name: active.name })}
-                    />
-                    {confirm === "push-force" ? (
-                      <BranchAction
-                        label="Confirm force push"
-                        hint="git push --force-with-lease"
-                        colors={colors}
-                        danger
-                        disabled={busy}
-                        onPress={() => onOp({ op: "push", name: active.name, force: true })}
-                      />
-                    ) : (
-                      <BranchAction
-                        label="Force push…"
-                        hint="--force-with-lease"
-                        colors={colors}
-                        danger
-                        disabled={busy}
-                        onPress={() => setConfirm("push-force")}
-                      />
-                    )}
-                  </>
-                ) : null}
-              </>
+              remotes.length > 0 ? (
+                confirm === "push-force" ? (
+                  <BranchAction
+                    label="Confirm force push"
+                    hint="git push --force-with-lease"
+                    colors={colors}
+                    danger
+                    disabled={busy}
+                    onPress={() => onOp({ op: "push", name: active.name, force: true })}
+                  />
+                ) : (
+                  <BranchAction
+                    label="Force push…"
+                    hint="--force-with-lease"
+                    colors={colors}
+                    danger
+                    disabled={busy}
+                    onPress={() => setConfirm("push-force")}
+                  />
+                )
+              ) : null
             ) : (
               <>
                 <BranchAction
@@ -1389,13 +1651,7 @@ function FileRow({
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onLongPress={(e) => openMenu(e.nativeEvent.pageX, e.nativeEvent.pageY)}
-      {...({
-        onContextMenu: (e: WebContextMenuEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          openMenu(e.nativeEvent.pageX, e.nativeEvent.pageY);
-        },
-      } as object)}
+      {...bindContextMenu(openMenu)}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -1768,6 +2024,8 @@ type RowColors = {
   fg: string;
   fgMuted: string;
   success: string;
+  added: string;
+  removed: string;
   chipBg: string;
   selected: string;
   hoverBg: string;
@@ -1799,6 +2057,10 @@ const CommitRow = memo(function CommitRow({
   onHeight,
   tintFor,
   onOpenFileMenu,
+  onPreviewBranch,
+  onOpenBranchMenu,
+  heads,
+  remotes,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
@@ -1824,6 +2086,10 @@ const CommitRow = memo(function CommitRow({
   onHeight: (index: number, height: number) => void;
   tintFor: (name: string) => string;
   onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
+  onPreviewBranch: (name: string) => void;
+  onOpenBranchMenu: (head: BranchHead, pageX: number, pageY: number) => void;
+  heads: BranchHead[];
+  remotes: string[];
 }) {
   const cardRef = useRef<View>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1916,13 +2182,7 @@ const CommitRow = memo(function CommitRow({
           onHideTip();
         }}
         onLongPress={(e) => openMenu(e.nativeEvent.pageX, e.nativeEvent.pageY)}
-        {...({
-          onContextMenu: (e: WebContextMenuEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openMenu(e.nativeEvent.pageX, e.nativeEvent.pageY);
-          },
-        } as object)}
+        {...bindContextMenu(openMenu)}
         style={{
           flexDirection: "row",
           alignItems: "center",
@@ -1936,8 +2196,19 @@ const CommitRow = memo(function CommitRow({
             {shownBranches.slice(0, 2).map((ref) => {
               const tint = tintFor(ref);
               return (
-                <View
+                <Pressable
                   key={ref}
+                  onPress={(e) => {
+                    (e as unknown as { stopPropagation?: () => void }).stopPropagation?.();
+                    onPreviewBranch(ref);
+                  }}
+                  onLongPress={(e) => {
+                    (e as unknown as { stopPropagation?: () => void }).stopPropagation?.();
+                    onOpenBranchMenu(resolveHead(ref, heads, row.hash, remotes), e.nativeEvent.pageX, e.nativeEvent.pageY);
+                  }}
+                  {...bindContextMenu((pageX, pageY) =>
+                    onOpenBranchMenu(resolveHead(ref, heads, row.hash, remotes), pageX, pageY),
+                  )}
                   style={{
                     backgroundColor: withAlpha(tint, "28"),
                     borderRadius: 4,
@@ -1953,7 +2224,7 @@ const CommitRow = memo(function CommitRow({
                   >
                     {ref}
                   </Text>
-                </View>
+                </Pressable>
               );
             })}
             {tags.slice(0, 1).map((tag) => (
@@ -2032,7 +2303,28 @@ const CommitRow = memo(function CommitRow({
             >
               {row.shortHash}
             </Text>
-            {row.author ? (
+            {isUncommitted && row.author ? (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 }}>
+                {row.author.split("  ·  ").map((part, i) => {
+                  const added = part.startsWith("+");
+                  const removed = part.startsWith("−") || part.startsWith("-");
+                  return (
+                    <Text
+                      key={`${part}-${i}`}
+                      numberOfLines={1}
+                      style={{
+                        color: added ? colors.added : removed ? colors.removed : colors.fgMuted,
+                        fontSize: 10,
+                        fontFamily: added || removed ? "monospace" : undefined,
+                        fontWeight: added || removed ? "600" : "400",
+                      }}
+                    >
+                      {part}
+                    </Text>
+                  );
+                })}
+              </View>
+            ) : row.author ? (
               <Text numberOfLines={1} style={{ color: colors.fgMuted, fontSize: 10, flexShrink: 1 }}>
                 {row.author}
               </Text>
@@ -2149,6 +2441,10 @@ function VirtualCommitList({
   onScrollDismiss,
   tintFor,
   onOpenFileMenu,
+  onPreviewBranch,
+  onOpenBranchMenu,
+  heads,
+  remotes,
 }: {
   rows: GitTreeRow[];
   graphW: number;
@@ -2170,6 +2466,10 @@ function VirtualCommitList({
   onScrollDismiss: () => void;
   tintFor: (name: string) => string;
   onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
+  onPreviewBranch: (name: string) => void;
+  onOpenBranchMenu: (head: BranchHead, pageX: number, pageY: number) => void;
+  heads: BranchHead[];
+  remotes: string[];
 }) {
   const listRows = useMemo(
     () => (uncommitted ? [uncommittedRow(uncommitted), ...rows] : rows),
@@ -2310,6 +2610,10 @@ function VirtualCommitList({
               onHeight={onHeight}
               tintFor={tintFor}
               onOpenFileMenu={onOpenFileMenu}
+              onPreviewBranch={onPreviewBranch}
+              onOpenBranchMenu={onOpenBranchMenu}
+              heads={heads}
+              remotes={remotes}
             />
           </View>
           );
@@ -2329,6 +2633,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   }));
   const getTree = useRpc(gitTree);
   const runBranch = useRpc(gitBranchOp);
+  const runCommit = useRpc(gitCommitOp);
   const toast = useToast();
   const shellRef = useRef<View>(null);
   const branchTriggerRef = useRef<View>(null);
@@ -2357,14 +2662,16 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [tip, setTip] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
   const [fileMenu, setFileMenu] = useState<{ x: number; y: number; path: string } | null>(null);
-  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number } | null>(null);
+  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; focus?: BranchHead } | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
-  const [scope, setScope] = useState<TreeScope>("all");
+  const [scope, setScope] = useState<TreeScope>("current");
   const [previewRef, setPreviewRef] = useState<string | null>(null);
   const [scopeMenu, setScopeMenu] = useState<{ x: number; y: number } | null>(null);
   const [scopeHover, setScopeHover] = useState(false);
   const [refreshHover, setRefreshHover] = useState(false);
+  const [pullHover, setPullHover] = useState(false);
+  const [pushHover, setPushHover] = useState(false);
   const [searchHover, setSearchHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
 
@@ -2448,7 +2755,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       setFileMenu(null);
       setBranchMenu(null);
       setScopeMenu(null);
-      placeAt(pageX, pageY, 208, 92, (x, y) => setMenu({ x, y, row }));
+      placeAt(pageX, pageY, 288, 380, (x, y) => setMenu({ x, y, row }));
     },
     [placeAt],
   );
@@ -2565,11 +2872,75 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     setBranchMenu(null);
   }, []);
 
+  const handleOpenBranchChip = useCallback(
+    (head: BranchHead, pageX: number, pageY: number) => {
+      menuOpen.current = true;
+      setTip(null);
+      setMenu(null);
+      setFileMenu(null);
+      setScopeMenu(null);
+      placeAt(pageX, pageY, 308, 420, (x, y) => setBranchMenu({ x, y, focus: head }));
+    },
+    [placeAt],
+  );
+
+  const handleCommitOp = useCallback(
+    (req: {
+      op: GitCommitOp;
+      hash: string;
+      name?: string;
+      mode?: "soft" | "mixed" | "hard";
+      checkOut?: boolean;
+    }) => {
+      if (!directory || branchBusy) return;
+      setBranchBusy(true);
+      void runCommit({
+        directory,
+        op: req.op,
+        hash: req.hash,
+        name: req.name,
+        mode: req.mode,
+        checkOut: req.checkOut,
+      })
+        .then((result) => {
+          if (result.error) {
+            toast.error(result.error);
+            return;
+          }
+          const done: Record<GitCommitOp, string> = {
+            checkout: "Checked out commit",
+            "cherry-pick": "Cherry-picked",
+            revert: "Reverted",
+            merge: "Merged commit",
+            rebase: "Rebased onto commit",
+            reset: req.mode === "hard" ? "Hard reset" : "Reset",
+            tag: req.name ? `Tagged ${req.name}` : "Tagged",
+            "create-branch": req.name ? `Created ${req.name}` : "Created branch",
+          };
+          toast.show(done[req.op]);
+          if (
+            req.op === "checkout" ||
+            req.op === "reset" ||
+            (req.op === "create-branch" && req.checkOut !== false)
+          ) {
+            setPreviewRef(null);
+          }
+          refresh();
+          setMenu(null);
+        })
+        .catch(() => toast.error("Git operation failed"))
+        .finally(() => setBranchBusy(false));
+    },
+    [directory, branchBusy, runCommit, toast, refresh],
+  );
+
   const colors: RowColors = useMemo(
     () => ({
       fg: theme.colors.foreground,
       fgMuted: theme.colors.foregroundMuted,
       success: theme.colors.statusSuccess,
+      added: theme.colors.statusSuccess,
+      removed: theme.colors.statusDanger,
       chipBg: theme.colors.surface1,
       selected: theme.colors.surface2,
       hoverBg: theme.colors.surface2,
@@ -2667,7 +3038,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const triggerColor = currentHead ? tintFor(currentHead.name) : theme.colors.foregroundMuted;
 
   return (
-    <View ref={shellRef} style={styles.screen}>
+    <View ref={shellRef} style={styles.screen} {...hostMenuBlock}>
       <View style={styles.header}>
         <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
           <Text style={styles.title}>Git Tree</Text>
@@ -2782,6 +3153,52 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             color={searching ? theme.colors.accent : theme.colors.foreground}
           />
         </Pressable>
+        {currentHead && !currentHead.remote ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Pull"
+              disabled={branchBusy}
+              onPress={() => handleBranchOp({ op: "pull" })}
+              onHoverIn={() => setPullHover(true)}
+              onHoverOut={() => setPullHover(false)}
+              hitSlop={8}
+              style={{
+                padding: 6,
+                borderRadius: 6,
+                backgroundColor: pullHover ? theme.colors.surface1 : "transparent",
+                opacity: branchBusy ? 0.45 : 1,
+              }}
+            >
+              <Icon
+                name="ArrowDownToLine"
+                size={14}
+                color={theme.colors.foreground}
+              />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Push"
+              disabled={branchBusy || remotes.length === 0}
+              onPress={() => handleBranchOp({ op: "push", name: currentHead.name })}
+              onHoverIn={() => setPushHover(true)}
+              onHoverOut={() => setPushHover(false)}
+              hitSlop={8}
+              style={{
+                padding: 6,
+                borderRadius: 6,
+                backgroundColor: pushHover ? theme.colors.surface1 : "transparent",
+                opacity: branchBusy || remotes.length === 0 ? 0.45 : 1,
+              }}
+            >
+              <Icon
+                name="ArrowUpFromLine"
+                size={14}
+                color={theme.colors.foreground}
+              />
+            </Pressable>
+          </>
+        ) : null}
         <Pressable
           accessibilityRole="button"
           onPress={refresh}
@@ -2879,6 +3296,10 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           onScrollDismiss={dismissFloats}
           tintFor={tintFor}
           onOpenFileMenu={handleOpenFileMenu}
+          onPreviewBranch={handlePreview}
+          onOpenBranchMenu={handleOpenBranchChip}
+          heads={heads}
+          remotes={remotes}
         />
       )}
 
@@ -2890,11 +3311,14 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           x={menu.x}
           y={menu.y}
           row={menu.row}
+          currentName={currentHead && !currentHead.remote ? currentHead.name : null}
           colors={floatColors}
+          busy={branchBusy}
           onDismiss={() => {
             menuOpen.current = false;
             setMenu(null);
           }}
+          onAct={handleCommitOp}
           onCopy={(kind) => {
             const target = menu.row;
             const text = kind === "message" ? target.subject : target.hash;
@@ -2942,6 +3366,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           heads={heads}
           remotes={remotes}
           preview={previewRef}
+          focus={branchMenu.focus}
           colors={floatColors}
           busy={branchBusy}
           tintFor={tintFor}

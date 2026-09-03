@@ -7,9 +7,10 @@
 
 - Explorer 侧边栏 tab（也可以作为普通 workspace tab 打开）
 - 窗口化渲染分支拓扑（默认 500 条，最多 2000），展开卡片时点和线位置不变
-- 顶部当前分支是下拉菜单：左键预览该分支历史（不 checkout），右键或 ⋯ 打开操作（checkout / merge / rebase / push / pull / fetch / rename / delete）
+- 顶部当前分支下拉：左键预览该分支历史（不 checkout），右键或 ⋯ 打开操作（checkout / merge / rebase / push / pull / fetch / rename / delete）
+- 图上的分支芯片：左键预览，右键打开与顶栏相同的分支操作；右键 commit 可 create branch / checkout / cherry-pick / revert / merge / rebase / reset / tag
 - 显示 commit 主题、作者、相对时间、ref 装饰（HEAD / 分支名 / tag），分支名与下拉使用同一套颜色
-- 范围切换：Branch（当前分支）/ Local（所有本地分支）/ All（含 remote）
+- 范围切换：默认 Branch（当前分支 + upstream 标签）；Local（本地分支）；All（含 remote，其它分支 tip 才会标在图上）
 - 搜索框：按 message / 作者 / hash / 分支名过滤；`f: <路径>` 按文件过滤（覆盖已加载窗口外的历史）
 - Ctrl/Cmd 点击两个 commit：任意两者对比，展开逐文件 diff
 - 顶部未提交改动摘要卡（修改 + 新增文件数、± 行数）

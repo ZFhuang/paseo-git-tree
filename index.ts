@@ -1,7 +1,7 @@
 import type { PluginContext } from "@getpaseo/plugin";
 import { GitTreePanel } from "./git-tree-panel.client";
-import { getCommitCompare, getCommitCompareDiff, getCommitDetail, getCommitDiff, getGitTree, runBranchOp } from "./git-tree.server";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, gitBranchOp, gitTree } from "./git-tree.shared";
+import { getCommitCompare, getCommitCompareDiff, getCommitDetail, getCommitDiff, getGitTree, runBranchOp, runCommitOp } from "./git-tree.server";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, gitBranchOp, gitCommitOp, gitTree } from "./git-tree.shared";
 
 export default function contribute(plugin: PluginContext) {
   plugin.handle(gitTree, getGitTree);
@@ -10,6 +10,7 @@ export default function contribute(plugin: PluginContext) {
   plugin.handle(commitCompare, getCommitCompare);
   plugin.handle(commitCompareDiff, getCommitCompareDiff);
   plugin.handle(gitBranchOp, runBranchOp);
+  plugin.handle(gitCommitOp, runCommitOp);
   plugin.addWorkspacePanel({
     id: "git-tree",
     title: "Git Tree",

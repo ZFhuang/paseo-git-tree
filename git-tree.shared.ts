@@ -47,7 +47,7 @@ export const gitTree = defineRpc({
     /** Which refs feed the log: the checked-out branch, all local branches
      *  (heads), or everything including remotes and tags. Ignored when
      *  `preview` is set. */
-    scope: treeScope.default("all"),
+    scope: treeScope.default("current"),
     /** Show this ref's history without checking it out. */
     preview: z.string().min(1).optional(),
     /** Only commits touching this path (file or directory). Optional. */
@@ -241,6 +241,39 @@ export const gitBranchOp = defineRpc({
 export type GitBranchOp = z.infer<typeof branchOp>;
 export type GitBranchOpOutput = z.output<typeof gitBranchOp.output>;
 
+const commitAct = z.enum([
+  "checkout",
+  "cherry-pick",
+  "revert",
+  "merge",
+  "rebase",
+  "reset",
+  "tag",
+  "create-branch",
+]);
+
+/** Mutating git operations targeting a commit (Git Graph commit menu). */
+export const gitCommitOp = defineRpc({
+  name: "gittree.commitact",
+  input: z.object({
+    directory: z.string().min(1),
+    op: commitAct,
+    hash: z.string().min(1),
+    /** New branch or tag name. */
+    name: z.string().optional(),
+    /** Reset mode; defaults to mixed. */
+    mode: z.enum(["soft", "mixed", "hard"]).optional(),
+    /** Create-branch: also check it out. Defaults to true. */
+    checkOut: z.boolean().optional(),
+  }),
+  output: z.object({
+    error: z.string().nullable(),
+  }),
+});
+
+export type GitCommitOp = z.infer<typeof commitAct>;
+export type GitCommitOpOutput = z.output<typeof gitCommitOp.output>;
+
 /**
  * Compute the lane graph from topologically-sorted commits.
  *
@@ -391,6 +424,34 @@ export function parseBranchRef(raw: string, remotes: string[]): ParsedRef | null
     }
   }
   return { label: ref, family: ref, remote: false };
+}
+
+/**
+ * Git Graph only paints labels for refs in the current view: the checked-out
+ * branch (+ its upstream) in Branch scope, local heads in Local, everything
+ * in All. Ancestor tips like `feat/…` stay off the current-branch line.
+ */
+export function refVisibleInScope(
+  raw: string,
+  scope: TreeScope,
+  remotes: string[],
+  currentBranch: string | null,
+  preview?: string,
+): boolean {
+  const t = raw.trim();
+  if (!t) return false;
+  if (t === "HEAD" || t.startsWith("HEAD ->") || t.startsWith("tag:")) return true;
+  const parsed = parseBranchRef(t, remotes);
+  if (!parsed) return false;
+  if (preview) {
+    const want = parseBranchRef(preview, remotes);
+    const family = want?.family ?? preview;
+    return parsed.family === family || parsed.label === preview;
+  }
+  if (scope === "all") return true;
+  if (scope === "local") return !parsed.remote;
+  if (!currentBranch || currentBranch === "HEAD") return false;
+  return parsed.family === currentBranch || parsed.label === currentBranch;
 }
 
 /** Split `origin/foo` into `{ remote: "origin", branch: "foo" }`. */

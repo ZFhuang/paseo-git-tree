@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree, isUncommittedHash, splitRemoteRef, UNCOMMITTED_HASH } from "./git-tree.shared";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "./git-tree.shared";
 
 type Input = ZodOutput<typeof gitTree.input>;
 
@@ -56,7 +56,7 @@ async function diffBase(directory: string, hash: string): Promise<string> {
 export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree.output>> {
   const directory = path.resolve(input.directory);
   const limit = input.limit ?? 300;
-  const scope = input.scope ?? "all";
+  const scope = input.scope ?? "current";
 
   try {
     // %x1e record / %x1f field separators: hash, parents, author, date, refs, subject.
@@ -70,18 +70,21 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
           ? ["--branches"]
           : ["--all"];
     const pathArgs = input.path ? ["--", input.path] : [];
-    const [out, remoteOut] = await Promise.all([
+    const [out, remoteOut, currentOut] = await Promise.all([
       runGit(
         directory,
         ["log", "--topo-order", ...refs, `--pretty=format:${fmt}`, `-n${limit}`, ...pathArgs],
         30_000,
       ),
       runGit(directory, ["remote"]).catch(() => ""),
+      runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ""),
     ]);
     const remotes = remoteOut
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
+    const currentBranch = firstLine(currentOut).trim();
+    const currentName = currentBranch && currentBranch !== "HEAD" ? currentBranch : null;
 
     const commits: Parameters<typeof computeGraph>[0] = [];
     for (const rawLine of out.split("\n")) {
@@ -90,17 +93,20 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
       const body = line.slice(line.indexOf("\x1e") + 1, line.lastIndexOf("\x1e"));
       const [hash = "", parentsRaw = "", author = "", date = "", refsRaw = "", subject = ""] =
         body.split("\x1f");
+      const allRefs = refsRaw
+        ? refsRaw
+            .split(/,\s*/)
+            .map((r) => r.trim())
+            .filter(Boolean)
+        : [];
       commits.push({
         hash,
         parents: parentsRaw ? parentsRaw.split(" ").filter(Boolean) : [],
         author,
         date,
-        refs: refsRaw
-          ? refsRaw
-              .split(/,\s*/)
-              .map((r) => r.trim())
-              .filter(Boolean)
-          : [],
+        refs: allRefs.filter((r) =>
+          refVisibleInScope(r, scope, remotes, currentName, preview || undefined),
+        ),
         subject,
       });
     }
@@ -544,6 +550,59 @@ export async function runBranchOp(
         const current = await currentBranchName(directory).catch(() => "");
         if (split.branch === current) throw new Error("Cannot fetch into the checked-out branch");
         await runGit(directory, ["fetch", split.remote, `${split.branch}:${split.branch}`], 60_000);
+        break;
+      }
+    }
+    return { error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: firstLine(message) || message };
+  }
+}
+
+function assertCommitHash(hash: string): string {
+  const h = hash.trim();
+  if (isUncommittedHash(h)) throw new Error("Not a git commit");
+  if (!/^[0-9a-f]{4,64}$/i.test(h)) throw new Error("Invalid commit hash");
+  return h;
+}
+
+export async function runCommitOp(
+  input: ZodOutput<typeof gitCommitOp.input>,
+): Promise<ZodOutput<typeof gitCommitOp.output>> {
+  const directory = path.resolve(input.directory);
+  try {
+    const hash = assertCommitHash(input.hash);
+    switch (input.op) {
+      case "checkout":
+        await runGit(directory, ["checkout", hash]);
+        break;
+      case "cherry-pick":
+        await runGit(directory, ["cherry-pick", hash], 60_000);
+        break;
+      case "revert":
+        await runGit(directory, ["revert", "--no-edit", hash], 60_000);
+        break;
+      case "merge":
+        await runGit(directory, ["merge", "--no-edit", hash], 60_000);
+        break;
+      case "rebase":
+        await runGit(directory, ["rebase", hash], 60_000);
+        break;
+      case "reset": {
+        const mode = input.mode ?? "mixed";
+        await runGit(directory, ["reset", `--${mode}`, hash]);
+        break;
+      }
+      case "tag": {
+        const name = assertBranchName(input.name ?? "");
+        await runGit(directory, ["tag", name, hash]);
+        break;
+      }
+      case "create-branch": {
+        const name = assertBranchName(input.name ?? "");
+        if (input.checkOut === false) await runGit(directory, ["branch", name, hash]);
+        else await runGit(directory, ["checkout", "-b", name, hash]);
         break;
       }
     }
