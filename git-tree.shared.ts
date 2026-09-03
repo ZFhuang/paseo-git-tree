@@ -534,6 +534,61 @@ export function assignRefColors(rows: GitTreeRow[], remotes: string[]): Map<stri
   return map;
 }
 
+/** List geometry constants shared by the client list and the tests. */
+export const LIST_PAD_Y = 8;
+export const LIST_OVERSCAN = 18;
+
+/** Y offset of row `index` when rows are `collapsedH` tall and the row at
+ *  `expandedIndex` is `expandedH` tall (an opened commit card). */
+export function itemOffset(
+  index: number,
+  collapsedH: number,
+  expandedIndex: number,
+  expandedH: number,
+): number {
+  const base = LIST_PAD_Y + index * collapsedH;
+  if (expandedIndex >= 0 && index > expandedIndex) return base + (expandedH - collapsedH);
+  return base;
+}
+
+/** Inverse of itemOffset: which row owns y (measured from list top). */
+export function indexAtY(
+  y: number,
+  count: number,
+  collapsedH: number,
+  expandedIndex: number,
+  expandedH: number,
+): number {
+  if (count <= 0) return 0;
+  if (y <= 0) return 0;
+  const last = count - 1;
+  if (expandedIndex < 0) return Math.min(last, Math.floor(y / collapsedH));
+  const top = expandedIndex * collapsedH;
+  if (y < top) return Math.min(expandedIndex, Math.floor(y / collapsedH));
+  if (y < top + expandedH) return expandedIndex;
+  return Math.min(last, expandedIndex + 1 + Math.floor((y - top - expandedH) / collapsedH));
+}
+
+/** Visible row window [start, end) for a viewport scrolled to `scrollY`. */
+export function windowRange(
+  scrollY: number,
+  viewportH: number,
+  count: number,
+  collapsedH: number,
+  expandedIndex: number,
+  expandedH: number,
+): { start: number; end: number } {
+  if (count === 0) return { start: 0, end: 0 };
+  const vh = viewportH > 0 ? viewportH : collapsedH * 24;
+  const localY = scrollY - LIST_PAD_Y;
+  const start = Math.max(0, indexAtY(localY, count, collapsedH, expandedIndex, expandedH) - LIST_OVERSCAN);
+  const end = Math.min(
+    count,
+    indexAtY(localY + vh, count, collapsedH, expandedIndex, expandedH) + LIST_OVERSCAN + 1,
+  );
+  return { start: start, end: Math.max(end, start) };
+}
+
 /**
  * Colour each commit and edge. A lane keeps its colour until it hits a ref
  * with a different assigned colour (typically `origin/branch` below unpushed

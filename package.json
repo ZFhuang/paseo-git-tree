@@ -4,7 +4,8 @@
   "private": true,
   "description": "Git branch tree sidebar plugin for Paseo",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test git-tree.shared.test.ts"
   },
   "devDependencies": {
     "@getpaseo/plugin": "*",
