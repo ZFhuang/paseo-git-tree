@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree, isUncommittedHash, UNCOMMITTED_HASH } from "./git-tree.shared";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree, isUncommittedHash, splitRemoteRef, UNCOMMITTED_HASH } from "./git-tree.shared";
 
 type Input = ZodOutput<typeof gitTree.input>;
 
@@ -61,8 +61,14 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
   try {
     // %x1e record / %x1f field separators: hash, parents, author, date, refs, subject.
     const fmt = "%x1e%H%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s%x1e";
-    const refs =
-      scope === "current" ? ["HEAD"] : scope === "local" ? ["--branches"] : ["--all"];
+    const preview = input.preview?.trim();
+    const refs = preview
+      ? [assertBranchName(preview)]
+      : scope === "current"
+        ? ["HEAD"]
+        : scope === "local"
+          ? ["--branches"]
+          : ["--all"];
     const pathArgs = input.path ? ["--", input.path] : [];
     const [out, remoteOut] = await Promise.all([
       runGit(
@@ -103,20 +109,42 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
 
     let heads: ZodOutput<typeof gitTree.output>["heads"] = [];
     try {
-      const branchOut = await runGit(directory, [
-        "for-each-ref",
-        "--format=%(refname:short)%09%(objectname)%09%(HEAD)",
-        "refs/heads",
+      const [branchOut, remoteRefOut, currentOut] = await Promise.all([
+        runGit(directory, [
+          "for-each-ref",
+          "--format=%(refname:short)%09%(objectname)%09%(HEAD)",
+          "refs/heads",
+        ]),
+        runGit(directory, [
+          "for-each-ref",
+          "--format=%(refname:short)%09%(objectname)",
+          "refs/remotes",
+        ]).catch(() => ""),
+        runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ""),
       ]);
-      const currentOut = await runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"]);
       const current = firstLine(currentOut).trim();
-      heads = branchOut
+      const locals = branchOut
         .split("\n")
         .filter((l) => l.trim() !== "")
         .map((line) => {
           const [name = "", hash = "", headFlag = ""] = line.split("\t");
-          return { name, hash, isCurrent: headFlag.trim() === "*" || name === current };
+          return {
+            name,
+            hash,
+            isCurrent: headFlag.trim() === "*" || name === current,
+            remote: false,
+          };
         });
+      const remoteHeads = remoteRefOut
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .map((line) => {
+          const [name = "", hash = ""] = line.split("\t");
+          return { name, hash };
+        })
+        .filter((r) => r.name && !r.name.endsWith("/HEAD"))
+        .map((r) => ({ name: r.name, hash: r.hash, isCurrent: false, remote: true }));
+      heads = [...locals, ...remoteHeads];
     } catch {
       // Branch listing is best-effort; the graph is the main content.
     }
@@ -402,18 +430,61 @@ export async function getCommitCompareDiff(
   }
 }
 
+async function listRemotes(directory: string): Promise<string[]> {
+  const out = await runGit(directory, ["remote"]).catch(() => "");
+  return out
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+function defaultRemote(remotes: string[]): string {
+  if (remotes.includes("origin")) return "origin";
+  if (remotes[0]) return remotes[0];
+  throw new Error("No remotes configured");
+}
+
+async function localBranchExists(directory: string, name: string): Promise<boolean> {
+  try {
+    await runGit(directory, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runBranchOp(
   input: ZodOutput<typeof gitBranchOp.input>,
 ): Promise<ZodOutput<typeof gitBranchOp.output>> {
   const directory = path.resolve(input.directory);
   try {
+    const remotes = await listRemotes(directory);
     switch (input.op) {
-      case "pull":
-        await runGit(directory, ["pull"], 60_000);
+      case "pull": {
+        if (!input.name) {
+          await runGit(directory, ["pull"], 60_000);
+          break;
+        }
+        const split = splitRemoteRef(input.name, remotes);
+        if (split) {
+          await runGit(directory, ["pull", split.remote, split.branch], 60_000);
+        } else {
+          await runGit(directory, ["pull"], 60_000);
+        }
         break;
+      }
       case "checkout": {
         const name = assertBranchName(input.name ?? "");
-        await runGit(directory, ["checkout", name]);
+        const split = splitRemoteRef(name, remotes);
+        if (split) {
+          if (await localBranchExists(directory, split.branch)) {
+            await runGit(directory, ["checkout", split.branch]);
+          } else {
+            await runGit(directory, ["checkout", "--track", `${split.remote}/${split.branch}`]);
+          }
+        } else {
+          await runGit(directory, ["checkout", name]);
+        }
         break;
       }
       case "merge": {
@@ -425,14 +496,54 @@ export async function runBranchOp(
       }
       case "delete": {
         const name = assertBranchName(input.name ?? "");
+        const split = splitRemoteRef(name, remotes);
+        if (split) {
+          await runGit(directory, ["push", split.remote, "--delete", split.branch], 60_000);
+          break;
+        }
         const current = await currentBranchName(directory);
         if (name === current) throw new Error("Cannot delete the current branch");
-        await runGit(directory, ["branch", "-d", name]);
+        await runGit(directory, ["branch", input.force ? "-D" : "-d", name]);
         break;
       }
       case "create": {
         const name = assertBranchName(input.name ?? "");
-        await runGit(directory, ["checkout", "-b", name]);
+        if (input.checkOut === false) await runGit(directory, ["branch", name]);
+        else await runGit(directory, ["checkout", "-b", name]);
+        break;
+      }
+      case "rename": {
+        const name = assertBranchName(input.name ?? "");
+        const newName = assertBranchName(input.newName ?? "");
+        if (name === newName) throw new Error("Name is unchanged");
+        await runGit(directory, ["branch", "-m", name, newName]);
+        break;
+      }
+      case "rebase": {
+        const name = assertBranchName(input.name ?? "");
+        const current = await currentBranchName(directory);
+        if (name === current) throw new Error("Already on this branch");
+        await runGit(directory, ["rebase", name], 60_000);
+        break;
+      }
+      case "push": {
+        const name = assertBranchName(input.name ?? (await currentBranchName(directory)));
+        const split = splitRemoteRef(name, remotes);
+        if (split) throw new Error("Push a local branch, not a remote ref");
+        const remote = defaultRemote(remotes);
+        const args = ["push"];
+        if (input.force) args.push("--force-with-lease");
+        args.push("-u", remote, name);
+        await runGit(directory, args, 60_000);
+        break;
+      }
+      case "fetch": {
+        const name = assertBranchName(input.name ?? "");
+        const split = splitRemoteRef(name, remotes);
+        if (!split) throw new Error("Fetch into local needs a remote branch");
+        const current = await currentBranchName(directory).catch(() => "");
+        if (split.branch === current) throw new Error("Cannot fetch into the checked-out branch");
+        await runGit(directory, ["fetch", split.remote, `${split.branch}:${split.branch}`], 60_000);
         break;
       }
     }

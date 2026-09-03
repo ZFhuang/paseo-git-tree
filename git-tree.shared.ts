@@ -45,8 +45,11 @@ export const gitTree = defineRpc({
     directory: z.string().min(1),
     limit: z.number().int().positive().max(2000).default(500),
     /** Which refs feed the log: the checked-out branch, all local branches
-     *  (heads), or everything including remotes and tags. */
+     *  (heads), or everything including remotes and tags. Ignored when
+     *  `preview` is set. */
     scope: treeScope.default("all"),
+    /** Show this ref's history without checking it out. */
+    preview: z.string().min(1).optional(),
     /** Only commits touching this path (file or directory). Optional. */
     path: z.string().optional(),
   }),
@@ -57,6 +60,8 @@ export const gitTree = defineRpc({
         name: z.string(),
         hash: z.string(),
         isCurrent: z.boolean(),
+        /** True for `origin/foo`-style refs from `refs/remotes`. */
+        remote: z.boolean().default(false),
       }),
     ),
     /** Remote names (`git remote`), used to pair `origin/foo` with local `foo`. */
@@ -201,7 +206,17 @@ export const commitCompareDiff = defineRpc({
 
 export type CommitCompareDiffOutput = z.output<typeof commitCompareDiff.output>;
 
-const branchOp = z.enum(["checkout", "merge", "delete", "pull", "create"]);
+const branchOp = z.enum([
+  "checkout",
+  "merge",
+  "delete",
+  "pull",
+  "create",
+  "rename",
+  "rebase",
+  "push",
+  "fetch",
+]);
 
 /** Mutating git branch operations for the header dropdown. */
 export const gitBranchOp = defineRpc({
@@ -209,8 +224,14 @@ export const gitBranchOp = defineRpc({
   input: z.object({
     directory: z.string().min(1),
     op: branchOp,
-    /** Target / new branch name. Required for every op except `pull`. */
+    /** Target / new branch name. Required for every op except current-branch `pull`. */
     name: z.string().optional(),
+    /** New local name for `rename`. */
+    newName: z.string().optional(),
+    /** `delete -D` or `push --force-with-lease`. */
+    force: z.boolean().optional(),
+    /** Create and switch to the new branch. Defaults to true. */
+    checkOut: z.boolean().optional(),
   }),
   output: z.object({
     error: z.string().nullable(),
@@ -370,6 +391,18 @@ export function parseBranchRef(raw: string, remotes: string[]): ParsedRef | null
     }
   }
   return { label: ref, family: ref, remote: false };
+}
+
+/** Split `origin/foo` into `{ remote: "origin", branch: "foo" }`. */
+export function splitRemoteRef(
+  name: string,
+  remotes: string[],
+): { remote: string; branch: string } | null {
+  const parsed = parseBranchRef(name, remotes);
+  if (!parsed?.remote) return null;
+  const remote = name.slice(0, name.length - parsed.family.length - 1);
+  if (!remote) return null;
+  return { remote, branch: parsed.family };
 }
 
 /**
