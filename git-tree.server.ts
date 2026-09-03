@@ -51,11 +51,18 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
     const refs =
       scope === "current" ? ["HEAD"] : scope === "local" ? ["--branches"] : ["--all"];
     const pathArgs = input.path ? ["--", input.path] : [];
-    const out = await runGit(
-      directory,
-      ["log", "--topo-order", ...refs, `--pretty=format:${fmt}`, `-n${limit}`, ...pathArgs],
-      30_000,
-    );
+    const [out, remoteOut] = await Promise.all([
+      runGit(
+        directory,
+        ["log", "--topo-order", ...refs, `--pretty=format:${fmt}`, `-n${limit}`, ...pathArgs],
+        30_000,
+      ),
+      runGit(directory, ["remote"]).catch(() => ""),
+    ]);
+    const remotes = remoteOut
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
 
     const commits: Parameters<typeof computeGraph>[0] = [];
     for (const rawLine of out.split("\n")) {
@@ -79,7 +86,7 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
       });
     }
 
-    const rows = computeGraph(commits);
+    const rows = computeGraph(commits, remotes);
 
     let heads: ZodOutput<typeof gitTree.output>["heads"] = [];
     try {
@@ -130,10 +137,10 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
       // Uncommitted summary is best-effort.
     }
 
-    return { rows, heads, uncommitted, error: null };
+    return { rows, heads, remotes, uncommitted, error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { rows: [], heads: [], uncommitted: null, error: message };
+    return { rows: [], heads: [], remotes: [], uncommitted: null, error: message };
   }
 }
 

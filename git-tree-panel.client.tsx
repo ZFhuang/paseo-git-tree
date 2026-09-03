@@ -10,6 +10,8 @@ import {
   computeGraph,
   gitBranchOp,
   gitTree,
+  graphColor,
+  assignRefColors,
   type CommitCompareOutput,
   type CommitCompareDiffOutput,
   type CommitDetailOutput,
@@ -60,25 +62,7 @@ function laneCountOf(rows: GitTreeRow[]): number {
   return max + 1;
 }
 
-/** VS Code-like palette for lanes; cycles when a graph has many lanes. */
-const LANE_COLORS = [
-  "#4aa3ff", // blue
-  "#8bc34a", // green
-  "#ffb74d", // orange
-  "#ba68c8", // purple
-  "#4dd0e1", // cyan
-  "#f06292", // pink
-  "#aed581", // lime
-  "#ff8a65", // coral
-  "#9575cd", // violet
-  "#ffd54f", // yellow
-];
-
-function laneColor(lane: number): string {
-  return LANE_COLORS[lane % LANE_COLORS.length];
-}
-
-/** Stable FNV-1a so each branch name maps to a distinct palette slot. */
+/** Fallback hash when a label is not in the ref-colour map. */
 function hashString(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
@@ -88,8 +72,9 @@ function hashString(s: string): number {
   return h >>> 0;
 }
 
-function branchColor(name: string): string {
-  return LANE_COLORS[hashString(name) % LANE_COLORS.length];
+function tintForRef(name: string, refColors: Map<string, number>): string {
+  const i = refColors.get(name);
+  return i !== undefined ? graphColor(i) : graphColor(hashString(name));
 }
 
 function withAlpha(hex: string, alpha: string): string {
@@ -265,8 +250,10 @@ function GraphSlice({
 
   const segs: Array<{ key: string; x1: number; y1: number; x2: number; y2: number; color: string }> = [];
   let ownThru = false;
+  const incomingTint = row.incomingColor != null ? graphColor(row.incomingColor) : graphColor(row.color);
+  const dotTint = graphColor(row.color);
   for (const edge of row.edges) {
-    const color = laneColor(edge.from);
+    const color = graphColor(edge.color);
     if (edge.fromTop) {
       segs.push({
         key: `${edge.from}>${edge.to}@in`,
@@ -280,14 +267,38 @@ function GraphSlice({
       if (edge.from === row.lane) ownThru = true;
       const x = laneX(edge.from);
       const startY = edge.from !== row.lane || arrived.has(edge.from) ? 0 : cy;
-      segs.push({
-        key: `${edge.from}>${edge.to}@thru`,
-        x1: x,
-        y1: startY,
-        x2: x,
-        y2: bottom,
-        color,
-      });
+      const splitOwn =
+        edge.from === row.lane &&
+        arrived.has(edge.from) &&
+        row.incomingColor != null &&
+        row.incomingColor !== row.color;
+      if (splitOwn) {
+        segs.push({
+          key: `${edge.from}>${edge.to}@in-split`,
+          x1: x,
+          y1: 0,
+          x2: x,
+          y2: cy,
+          color: incomingTint,
+        });
+        segs.push({
+          key: `${edge.from}>${edge.to}@out-split`,
+          x1: x,
+          y1: cy,
+          x2: x,
+          y2: bottom,
+          color: dotTint,
+        });
+      } else {
+        segs.push({
+          key: `${edge.from}>${edge.to}@thru`,
+          x1: x,
+          y1: startY,
+          x2: x,
+          y2: bottom,
+          color,
+        });
+      }
     } else {
       segs.push({
         key: `${edge.from}>${edge.to}@out`,
@@ -309,7 +320,7 @@ function GraphSlice({
       y1: 0,
       x2: x,
       y2: cy,
-      color: laneColor(row.lane),
+      color: incomingTint,
     });
   }
 
@@ -336,7 +347,7 @@ function GraphSlice({
           width: DOT_R * 2,
           height: DOT_R * 2,
           borderRadius: DOT_R,
-          backgroundColor: laneColor(row.lane),
+          backgroundColor: graphColor(row.color),
           borderWidth: 1,
           borderColor: "rgba(0,0,0,0.35)",
         }}
@@ -593,6 +604,7 @@ function BranchMenu({
   heads,
   colors,
   busy,
+  tintFor,
   onDismiss,
   onOp,
 }: {
@@ -601,6 +613,7 @@ function BranchMenu({
   heads: BranchHead[];
   colors: FloatColors;
   busy: boolean;
+  tintFor: (name: string) => string;
   onDismiss: () => void;
   onOp: (op: GitBranchOp | "copy", name?: string) => void;
 }) {
@@ -699,7 +712,7 @@ function BranchMenu({
           ) : null}
 
           {sorted.map((h) => {
-            const color = branchColor(h.name);
+            const color = tintFor(h.name);
             const open = openName === h.name;
             return (
               <BranchNameRow
@@ -1297,6 +1310,7 @@ const CommitRow = memo(function CommitRow({
   onShowTip,
   onHideTip,
   onHeight,
+  tintFor,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
@@ -1320,6 +1334,7 @@ const CommitRow = memo(function CommitRow({
   onShowTip: (row: GitTreeRow, pageX: number, pageY: number) => void;
   onHideTip: () => void;
   onHeight: (index: number, height: number) => void;
+  tintFor: (name: string) => string;
 }) {
   const cardRef = useRef<View>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1429,7 +1444,7 @@ const CommitRow = memo(function CommitRow({
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             {shownBranches.slice(0, 2).map((ref) => {
-              const tint = branchColor(ref);
+              const tint = tintFor(ref);
               return (
                 <View
                   key={ref}
@@ -1693,6 +1708,7 @@ function VirtualCommitList({
   onShowTip,
   onHideTip,
   onScrollDismiss,
+  tintFor,
 }: {
   rows: GitTreeRow[];
   graphW: number;
@@ -1712,6 +1728,7 @@ function VirtualCommitList({
   onShowTip: (row: GitTreeRow, pageX: number, pageY: number) => void;
   onHideTip: () => void;
   onScrollDismiss: () => void;
+  tintFor: (name: string) => string;
 }) {
   const expandedIndex = useMemo(
     () =>
@@ -1840,6 +1857,7 @@ function VirtualCommitList({
               onShowTip={onShowTip}
               onHideTip={onHideTip}
               onHeight={onHeight}
+              tintFor={tintFor}
             />
           </View>
         ))}
@@ -2104,6 +2122,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   }
 
   const allRows = data?.rows ?? [];
+  const remotes = data?.remotes ?? [];
   const queryTrim = query.trim().toLowerCase();
   const { rows, graphW } = useMemo(() => {
     // A path filter is resolved server-side (git log -- <path>); the rows we
@@ -2117,13 +2136,15 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         r.refs.some((ref) => ref.toLowerCase().includes(queryTrim)),
     );
     // Recompute lanes on the filtered subset so the graph stays connected.
-    const relaid = computeGraph(hits);
+    const relaid = computeGraph(hits, remotes);
     return { rows: relaid, graphW: graphWidth(laneCountOf(relaid)) };
-  }, [allRows, queryTrim, debouncedPath]);
+  }, [allRows, queryTrim, debouncedPath, remotes]);
+  const refColors = useMemo(() => assignRefColors(rows, remotes), [rows, remotes]);
+  const tintFor = useCallback((name: string) => tintForRef(name, refColors), [refColors]);
   const heads = data?.heads ?? [];
   const currentHead = heads.find((h) => h.isCurrent);
   const triggerName = currentHead?.name ?? (heads.length > 0 ? "HEAD" : null);
-  const triggerColor = currentHead ? branchColor(currentHead.name) : theme.colors.foregroundMuted;
+  const triggerColor = currentHead ? tintFor(currentHead.name) : theme.colors.foregroundMuted;
 
   return (
     <View ref={shellRef} style={styles.screen}>
@@ -2334,6 +2355,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           onShowTip={handleShowTip}
           onHideTip={handleHideTip}
           onScrollDismiss={dismissFloats}
+          tintFor={tintFor}
         />
       )}
 
@@ -2367,6 +2389,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           heads={heads}
           colors={floatColors}
           busy={branchBusy}
+          tintFor={tintFor}
           onDismiss={() => setBranchMenu(null)}
           onOp={handleBranchOp}
         />

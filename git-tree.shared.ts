@@ -20,6 +20,10 @@ export const rowSchema = z.object({
   /** Parent hashes, in order. Needed to re-lane a filtered subset. */
   parents: z.array(z.string()),
   lane: z.number().int(),
+  /** Palette index for this commit's dot and the lines leaving it. */
+  color: z.number().int(),
+  /** Palette index of the line arriving at this commit, if any. */
+  incomingColor: z.number().int().nullable(),
   /** `fromTop: true` marks a segment that enters this row's dot from above
    *  (a lane converging into this commit); others leave the dot downwards. */
   edges: z.array(
@@ -27,6 +31,7 @@ export const rowSchema = z.object({
       from: z.number().int(),
       to: z.number().int(),
       fromTop: z.boolean().default(false),
+      color: z.number().int(),
     }),
   ),
 });
@@ -54,6 +59,8 @@ export const gitTree = defineRpc({
         isCurrent: z.boolean(),
       }),
     ),
+    /** Remote names (`git remote`), used to pair `origin/foo` with local `foo`. */
+    remotes: z.array(z.string()),
     /** Uncommitted changes summary: index + worktree + untracked, vs HEAD.
  *  Null when clean or on a repo with no commits. */
     uncommitted: z
@@ -207,7 +214,7 @@ export type GraphInputCommit = Pick<
   "hash" | "parents" | "subject" | "author" | "date" | "refs"
 >;
 
-export function computeGraph(commits: GraphInputCommit[]): GitTreeRow[] {
+export function computeGraph(commits: GraphInputCommit[], remotes: string[] = []): GitTreeRow[] {
   const lanes: (string | null)[] = [];
   const rows: GitTreeRow[] = [];
 
@@ -283,9 +290,177 @@ export function computeGraph(commits: GraphInputCommit[]): GitTreeRow[] {
       date: commit.date,
       refs: commit.refs,
       lane,
-      edges: [...segs.values()],
+      color: 0,
+      incomingColor: null,
+      edges: [...segs.values()].map((e) => ({ ...e, color: 0 })),
     });
   }
 
-  return rows;
+  return paintGraph(rows, remotes);
+}
+
+/** mhutchie Git Graph default palette. */
+export const GRAPH_COLORS = [
+  "#0085d9",
+  "#d9008f",
+  "#00d90a",
+  "#d98500",
+  "#a300d9",
+  "#ff0000",
+  "#00d9cc",
+  "#e138e8",
+  "#85d900",
+  "#dc5b23",
+  "#6f24d6",
+  "#ffcc00",
+];
+
+export function graphColor(index: number): string {
+  return GRAPH_COLORS[((index % GRAPH_COLORS.length) + GRAPH_COLORS.length) % GRAPH_COLORS.length];
+}
+
+type ParsedRef = { label: string; family: string; remote: boolean };
+
+/** Strip `HEAD ->` / tags and split `origin/foo` using known remote names. */
+export function parseBranchRef(raw: string, remotes: string[]): ParsedRef | null {
+  let ref = raw.trim();
+  if (ref === "HEAD") return null;
+  if (ref.startsWith("tag:")) return null;
+  if (ref.startsWith("HEAD -> ")) ref = ref.slice("HEAD -> ".length).trim();
+  if (!ref || ref === "HEAD") return null;
+  const sorted = remotes.slice().sort((a, b) => b.length - a.length);
+  for (const remote of sorted) {
+    const prefix = `${remote}/`;
+    if (ref === `${remote}/HEAD`) return null;
+    if (ref.startsWith(prefix)) {
+      const family = ref.slice(prefix.length);
+      if (!family) return null;
+      return { label: ref, family, remote: true };
+    }
+  }
+  return { label: ref, family: ref, remote: false };
+}
+
+/**
+ * Local and its upstream share a colour only when they point at the same
+ * commit. Otherwise each head gets its own slot so unpushed (and unpulled)
+ * stretches read as a different colour on the graph.
+ */
+export function assignRefColors(rows: GitTreeRow[], remotes: string[]): Map<string, number> {
+  const byFamily = new Map<string, Array<ParsedRef & { hash: string }>>();
+  const order: string[] = [];
+  for (const row of rows) {
+    for (const raw of row.refs) {
+      const parsed = parseBranchRef(raw, remotes);
+      if (!parsed) continue;
+      let list = byFamily.get(parsed.family);
+      if (!list) {
+        list = [];
+        byFamily.set(parsed.family, list);
+        order.push(parsed.family);
+      }
+      if (!list.some((m) => m.label === parsed.label)) list.push({ ...parsed, hash: row.hash });
+    }
+  }
+
+  const map = new Map<string, number>();
+  let next = 0;
+  for (const family of order) {
+    const members = byFamily.get(family) ?? [];
+    const locals = members.filter((m) => !m.remote);
+    const remoteMembers = members.filter((m) => m.remote);
+    const localHash = locals[0]?.hash;
+    const remoteHashes = [...new Set(remoteMembers.map((m) => m.hash))];
+    const overlap =
+      localHash !== undefined &&
+      (remoteMembers.length === 0 || (remoteHashes.length === 1 && remoteHashes[0] === localHash));
+
+    if (overlap) {
+      const c = next++;
+      for (const m of members) map.set(m.label, c);
+      continue;
+    }
+    if (localHash === undefined) {
+      const byHash = new Map<string, number>();
+      for (const m of remoteMembers) {
+        let c = byHash.get(m.hash);
+        if (c === undefined) {
+          c = next++;
+          byHash.set(m.hash, c);
+        }
+        map.set(m.label, c);
+      }
+      continue;
+    }
+    const localColor = next++;
+    for (const m of locals) map.set(m.label, localColor);
+    const byHash = new Map<string, number>();
+    for (const m of remoteMembers) {
+      let c = byHash.get(m.hash);
+      if (c === undefined) {
+        c = next++;
+        byHash.set(m.hash, c);
+      }
+      map.set(m.label, c);
+    }
+  }
+  return map;
+}
+
+/**
+ * Colour each commit and edge. A lane keeps its colour until it hits a ref
+ * with a different assigned colour (typically `origin/branch` below unpushed
+ * local commits).
+ */
+export function paintGraph(rows: GitTreeRow[], remotes: string[]): GitTreeRow[] {
+  const refColors = assignRefColors(rows, remotes);
+  const laneColors: Array<number | undefined> = [];
+  let anon = -1;
+  for (const c of refColors.values()) if (c > anon) anon = c;
+  anon += 1;
+
+  return rows.map((row) => {
+    const incoming = laneColors[row.lane];
+    const onCommit: number[] = [];
+    let localColor: number | undefined;
+    for (const raw of row.refs) {
+      const parsed = parseBranchRef(raw, remotes);
+      if (!parsed) continue;
+      const c = refColors.get(parsed.label);
+      if (c === undefined) continue;
+      onCommit.push(c);
+      if (!parsed.remote && localColor === undefined) localColor = c;
+    }
+    const dot =
+      localColor ??
+      onCommit[0] ??
+      incoming ??
+      anon++;
+
+    const edges = row.edges.map((edge) => {
+      let color: number;
+      if (edge.fromTop) color = laneColors[edge.from] ?? dot;
+      else if (edge.from === edge.to && edge.from !== row.lane) color = laneColors[edge.from] ?? 0;
+      else color = dot;
+      return { ...edge, color };
+    });
+
+    const keepsOwn = row.edges.some((e) => !e.fromTop && e.from === row.lane && e.to === row.lane);
+    if (keepsOwn) {
+      laneColors[row.lane] = dot;
+    } else {
+      laneColors[row.lane] = undefined;
+    }
+    for (const edge of row.edges) {
+      if (edge.fromTop || edge.from !== row.lane || edge.to === row.lane) continue;
+      if (laneColors[edge.to] === undefined) laneColors[edge.to] = dot;
+    }
+
+    return {
+      ...row,
+      color: dot,
+      incomingColor: incoming ?? null,
+      edges,
+    };
+  });
 }
