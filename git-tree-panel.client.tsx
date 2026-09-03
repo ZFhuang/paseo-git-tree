@@ -420,12 +420,32 @@ function CommitTip({
   y,
   row,
   colors,
+  directory,
 }: {
   x: number;
   y: number;
   row: GitTreeRow;
   colors: FloatColors;
+  directory: string | null;
 }) {
+  const getDetail = useRpc(commitDetail);
+  const [body, setBody] = useState<string | null>(null);
+
+  // Fetch the full commit message for the tip; subject-only rows would hide it.
+  useEffect(() => {
+    setBody(null);
+    if (!directory || isUncommittedHash(row.hash)) return;
+    let cancelled = false;
+    getDetail({ directory, hash: row.hash })
+      .then((d) => {
+        if (!cancelled && !d.error) setBody(d.body || null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [directory, row.hash, getDetail]);
+
   const date = row.date ? row.date.replace("T", " ").slice(0, 19) : "";
   return (
     <View
@@ -447,6 +467,11 @@ function CommitTip({
       }}
     >
       <Text style={{ color: colors.fg, fontSize: 12, lineHeight: 17 }}>{row.subject}</Text>
+      {body ? (
+        <Text numberOfLines={6} style={{ color: colors.fgMuted, fontSize: 11, lineHeight: 15 }}>
+          {body}
+        </Text>
+      ) : null}
       <Text style={{ color: colors.fgMuted, fontSize: 10, fontFamily: "monospace" }}>
         {row.shortHash}
         {row.author ? `  ·  ${row.author}` : ""}
@@ -1731,6 +1756,7 @@ function CommitExpansion({
   onToggleFile,
   onOpenFileMenu,
   graphW,
+  refreshKey,
 }: {
   directory: string;
   hash: string;
@@ -1739,15 +1765,19 @@ function CommitExpansion({
   onToggleFile: (path: string) => void;
   onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
   graphW: number;
+  /** Increments on every tree refresh so an open card reloads its detail. */
+  refreshKey: number;
 }) {
   const getDetail = useRpc(commitDetail);
   const getDiff = useRpc(commitDiff);
   const [detail, setDetail] = useState<CommitDetailOutput | null>(null);
   const [diff, setDiff] = useState<CommitDiffOutput | null>(null);
+  /** Identity of the diff currently shown; resets only when it changes, so a
+   *  tree refresh refetches in place without flashing the loading state. */
+  const diffKeyRef = useRef("");
 
   useEffect(() => {
     let cancelled = false;
-    setDetail(null);
     getDetail({ directory, hash })
       .then((d) => {
         if (!cancelled) setDetail(d);
@@ -1756,15 +1786,20 @@ function CommitExpansion({
     return () => {
       cancelled = true;
     };
-  }, [directory, hash, getDetail]);
+  }, [directory, hash, getDetail, refreshKey]);
 
   useEffect(() => {
     if (!expandedFile) {
+      diffKeyRef.current = "";
       setDiff(null);
       return;
     }
+    const key = `${hash}::${expandedFile}`;
+    if (diffKeyRef.current !== key) {
+      diffKeyRef.current = key;
+      setDiff(null);
+    }
     let cancelled = false;
-    setDiff(null);
     getDiff({ directory, hash, path: expandedFile })
       .then((d) => {
         if (!cancelled) setDiff(d);
@@ -1775,7 +1810,7 @@ function CommitExpansion({
     return () => {
       cancelled = true;
     };
-  }, [directory, hash, expandedFile, getDiff]);
+  }, [directory, hash, expandedFile, getDiff, refreshKey]);
 
   const colors = {
     fg: theme.colors.foreground,
@@ -1898,6 +1933,7 @@ function CompareExpansion({
   onToggleFile,
   onOpenFileMenu,
   graphW,
+  refreshKey,
 }: {
   directory: string;
   base: GitTreeRow;
@@ -1907,15 +1943,19 @@ function CompareExpansion({
   onToggleFile: (path: string) => void;
   onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
   graphW: number;
+  /** Increments on every tree refresh so an open compare view reloads. */
+  refreshKey: number;
 }) {
   const getCompare = useRpc(commitCompare);
   const getCompareDiff = useRpc(commitCompareDiff);
   const [result, setResult] = useState<CommitCompareOutput | null>(null);
   const [diff, setDiff] = useState<CommitCompareDiffOutput | null>(null);
+  /** Identity of the diff currently shown; resets only when it changes, so a
+   *  tree refresh refetches in place without flashing the loading state. */
+  const diffKeyRef = useRef("");
 
   useEffect(() => {
     let cancelled = false;
-    setResult(null);
     getCompare({ directory, base: base.hash, head: head.hash })
       .then((r) => {
         if (!cancelled) setResult(r);
@@ -1924,15 +1964,20 @@ function CompareExpansion({
     return () => {
       cancelled = true;
     };
-  }, [directory, base.hash, head.hash, getCompare]);
+  }, [directory, base.hash, head.hash, getCompare, refreshKey]);
 
   useEffect(() => {
     if (!expandedFile) {
+      diffKeyRef.current = "";
       setDiff(null);
       return;
     }
+    const key = `${base.hash}::${head.hash}::${expandedFile}`;
+    if (diffKeyRef.current !== key) {
+      diffKeyRef.current = key;
+      setDiff(null);
+    }
     let cancelled = false;
-    setDiff(null);
     getCompareDiff({ directory, base: base.hash, head: head.hash, path: expandedFile })
       .then((d) => {
         if (!cancelled) setDiff(d);
@@ -1943,7 +1988,7 @@ function CompareExpansion({
     return () => {
       cancelled = true;
     };
-  }, [directory, base.hash, head.hash, expandedFile, getCompareDiff]);
+  }, [directory, base.hash, head.hash, expandedFile, getCompareDiff, refreshKey]);
 
   const colors = {
     fg: theme.colors.foreground,
@@ -2061,6 +2106,7 @@ const CommitRow = memo(function CommitRow({
   onOpenBranchMenu,
   heads,
   remotes,
+  refreshKey,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
@@ -2090,6 +2136,8 @@ const CommitRow = memo(function CommitRow({
   onOpenBranchMenu: (head: BranchHead, pageX: number, pageY: number) => void;
   heads: BranchHead[];
   remotes: string[];
+  /** Tree refresh generation; forwarded to expansion panels. */
+  refreshKey: number;
 }) {
   const cardRef = useRef<View>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2101,6 +2149,15 @@ const CommitRow = memo(function CommitRow({
     },
     [],
   );
+
+  // Clicking to expand can happen while still hovering — kill any pending tip
+  // scheduled before the card opened.
+  useEffect(() => {
+    if (expanded) {
+      clearTipTimer();
+      onHideTip();
+    }
+  }, [expanded, onHideTip]);
 
   const headRef = row.refs.find((r) => r.startsWith("HEAD ->"));
   const headBranch = headRef ? headRef.slice("HEAD -> ".length) : null;
@@ -2132,6 +2189,8 @@ const CommitRow = memo(function CommitRow({
 
   const scheduleTip = () => {
     clearTipTimer();
+    // The expanded card already shows full detail; a hover tip would duplicate it.
+    if (expanded) return;
     tipTimer.current = setTimeout(() => {
       cardRef.current?.measureInWindow((x, y, w, h) => {
         onShowTip(row, x + Math.min(w * 0.35, 140), y + h + 6);
@@ -2346,6 +2405,7 @@ const CommitRow = memo(function CommitRow({
             onToggleFile={onToggleFile}
             onOpenFileMenu={onOpenFileMenu}
             graphW={graphW}
+            refreshKey={refreshKey}
           />
         </View>
       ) : null}
@@ -2361,6 +2421,7 @@ const CommitRow = memo(function CommitRow({
             onToggleFile={onToggleFile}
             onOpenFileMenu={onOpenFileMenu}
             graphW={graphW}
+            refreshKey={refreshKey}
           />
         </View>
       ) : null}
@@ -2420,6 +2481,7 @@ function windowRange(
   return { start, end: Math.max(end, start) };
 }
 
+
 function VirtualCommitList({
   rows,
   graphW,
@@ -2445,6 +2507,7 @@ function VirtualCommitList({
   onOpenBranchMenu,
   heads,
   remotes,
+  refreshKey,
 }: {
   rows: GitTreeRow[];
   graphW: number;
@@ -2470,6 +2533,8 @@ function VirtualCommitList({
   onOpenBranchMenu: (head: BranchHead, pageX: number, pageY: number) => void;
   heads: BranchHead[];
   remotes: string[];
+  /** Tree refresh generation; forwarded to commit rows. */
+  refreshKey: number;
 }) {
   const listRows = useMemo(
     () => (uncommitted ? [uncommittedRow(uncommitted), ...rows] : rows),
@@ -2614,6 +2679,7 @@ function VirtualCommitList({
               onOpenBranchMenu={onOpenBranchMenu}
               heads={heads}
               remotes={remotes}
+              refreshKey={refreshKey}
             />
           </View>
           );
@@ -2670,6 +2736,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const previewHold = useRef<string | null>(null);
   previewHold.current = previewRef;
   const loadGen = useRef(0);
+  /** Bumped every time fresh tree data lands; expansion panels refetch their
+   *  detail/diff when it changes so an open card doesn't keep stale content. */
+  const [refreshKey, setRefreshKey] = useState(0);
   const [scopeMenu, setScopeMenu] = useState<{ x: number; y: number } | null>(null);
   const [scopeHover, setScopeHover] = useState(false);
   const [refreshHover, setRefreshHover] = useState(false);
@@ -2693,7 +2762,10 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         ...(opts?.sync ? { sync: true } : {}),
       })
         .then((next) => {
-          if (id === loadGen.current) setData(next);
+          if (id === loadGen.current) {
+            setData(next);
+            setRefreshKey((k) => k + 1);
+          }
         })
         .catch(() => {
           if (id === loadGen.current) setData(null);
@@ -3328,11 +3400,12 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           onOpenBranchMenu={handleOpenBranchChip}
           heads={heads}
           remotes={remotes}
+          refreshKey={refreshKey}
         />
       )}
 
       {tip && !menu && !fileMenu && !branchMenu && !scopeMenu ? (
-        <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} />
+        <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} directory={directory} />
       ) : null}
       {menu ? (
         <CommitMenu
