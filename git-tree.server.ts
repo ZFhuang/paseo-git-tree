@@ -1,19 +1,32 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree } from "./git-tree.shared";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitTree, isUncommittedHash, UNCOMMITTED_HASH } from "./git-tree.shared";
 
 type Input = ZodOutput<typeof gitTree.input>;
 
-function runGit(directory: string, args: string[], timeoutMs = 15_000): Promise<string> {
+function runGit(
+  directory: string,
+  args: string[],
+  timeoutMs = 15_000,
+  allowExit: number[] = [],
+): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
       args,
       { cwd: directory, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, windowsHide: true },
       (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr.trim() || err.message));
-        else resolve(stdout);
+        if (!err) {
+          resolve(stdout);
+          return;
+        }
+        const code = (err as { code?: unknown }).code;
+        if (typeof code === "number" && allowExit.includes(code)) {
+          resolve(stdout);
+          return;
+        }
+        reject(new Error(stderr.trim() || err.message));
       },
     );
   });
@@ -169,11 +182,12 @@ type DiffFile = {
 };
 
 /** Merge `git diff --numstat` and `--name-status` between two revs into one
- *  per-file list (rename-aware). */
-async function diffFiles(directory: string, base: string, head: string): Promise<DiffFile[]> {
+ *  per-file list (rename-aware). Omit `head` to diff `base` against the worktree. */
+async function diffFiles(directory: string, base: string, head?: string): Promise<DiffFile[]> {
+  const revs = head ? [base, head] : [base];
   const [stats, statuses] = await Promise.all([
-    runGit(directory, ["diff", "--numstat", base, head]).catch(() => ""),
-    runGit(directory, ["diff", "--name-status", base, head]).catch(() => ""),
+    runGit(directory, ["diff", "--numstat", ...revs], 15_000, [1]).catch(() => ""),
+    runGit(directory, ["diff", "--name-status", ...revs], 15_000, [1]).catch(() => ""),
   ]);
   const statByPath = new Map<string, { additions: number; deletions: number }>();
   for (const line of stats.split("\n")) {
@@ -207,11 +221,81 @@ async function diffFiles(directory: string, base: string, head: string): Promise
     }));
 }
 
+function unquotePorcelainPath(raw: string): string {
+  const t = raw.trim();
+  if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) return t.slice(1, -1);
+  return t;
+}
+
+/** Index + worktree + untracked files vs HEAD (or the empty tree). */
+async function worktreeFiles(directory: string): Promise<DiffFile[]> {
+  let base = "HEAD";
+  try {
+    await runGit(directory, ["rev-parse", "--verify", "HEAD"]);
+  } catch {
+    base = EMPTY_TREE;
+  }
+  const files = await diffFiles(directory, base);
+  const seen = new Set(files.map((f) => f.path));
+  const porcelain = await runGit(directory, ["status", "--porcelain", "--untracked-files=all"]).catch(() => "");
+  for (const line of porcelain.split("\n")) {
+    if (!line.startsWith("??")) continue;
+    const filePath = unquotePorcelainPath(line.slice(3));
+    if (!filePath || seen.has(filePath)) continue;
+    files.push({ path: filePath, oldPath: null, status: "?", additions: 0, deletions: 0 });
+    seen.add(filePath);
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return files;
+}
+
+async function worktreePatch(directory: string, filePath: string): Promise<string> {
+  const vsHead = await runGit(directory, ["diff", "HEAD", "--", filePath], 15_000, [1]).catch(() => "");
+  if (vsHead.trim()) return vsHead;
+  const emptyBlob = process.platform === "win32" ? "NUL" : "/dev/null";
+  return runGit(directory, ["diff", "--no-index", "--", emptyBlob, filePath], 15_000, [1]).catch(() => "");
+}
+
 export async function getCommitDetail(
   input: ZodOutput<typeof commitDetail.input>,
 ): Promise<ZodOutput<typeof commitDetail.output>> {
   const directory = path.resolve(input.directory);
   const { hash } = input;
+  if (isUncommittedHash(hash)) {
+    try {
+      let parent = "";
+      try {
+        parent = firstLine(await runGit(directory, ["rev-parse", "HEAD"])).trim();
+      } catch {
+        // no commits yet
+      }
+      const files = await worktreeFiles(directory);
+      return {
+        hash: UNCOMMITTED_HASH,
+        author: "Working tree",
+        email: "",
+        date: new Date().toISOString(),
+        subject: "Uncommitted changes",
+        body: "",
+        parents: parent ? [parent] : [],
+        files,
+        error: null,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        hash: UNCOMMITTED_HASH,
+        author: "",
+        email: "",
+        date: "",
+        subject: "",
+        body: "",
+        parents: [],
+        files: [],
+        error: message,
+      };
+    }
+  }
   try {
     const fmt = "%H%x1f%an%x1f%ae%x1f%aI%x1f%P%x1f%s%x1f%b";
     const meta = await runGit(directory, ["show", "-s", `--pretty=format:${fmt}`, hash]);
@@ -254,8 +338,11 @@ export async function getCommitDiff(
 ): Promise<ZodOutput<typeof commitDiff.output>> {
   const directory = path.resolve(input.directory);
   try {
+    if (isUncommittedHash(input.hash)) {
+      return { patch: await worktreePatch(directory, input.path), error: null };
+    }
     const base = await diffBase(directory, input.hash);
-    const patch = await runGit(directory, ["diff", base, input.hash, "--", input.path]);
+    const patch = await runGit(directory, ["diff", base, input.hash, "--", input.path], 15_000, [1]);
     return { patch, error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

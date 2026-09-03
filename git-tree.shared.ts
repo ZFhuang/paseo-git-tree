@@ -80,6 +80,37 @@ export const gitTree = defineRpc({
 export type GitTreeOutput = z.output<typeof gitTree.output>;
 export type GitTreeRow = z.output<typeof rowSchema>;
 
+/** Sentinel hash for the working-tree pseudo-commit. Not a git object. */
+export const UNCOMMITTED_HASH = "UNCOMMITTED";
+
+export function isUncommittedHash(hash: string): boolean {
+  return hash === UNCOMMITTED_HASH;
+}
+
+export function uncommittedRow(
+  summary: NonNullable<GitTreeOutput["uncommitted"]>,
+): GitTreeRow {
+  const bits = [
+    `${summary.count} file${summary.count === 1 ? "" : "s"}`,
+    summary.additions > 0 ? `+${summary.additions}` : "",
+    summary.deletions > 0 ? `−${summary.deletions}` : "",
+    summary.untracked > 0 ? `${summary.untracked} untracked` : "",
+  ].filter(Boolean);
+  return {
+    hash: UNCOMMITTED_HASH,
+    shortHash: "WT",
+    subject: "Uncommitted changes",
+    author: bits.join("  ·  "),
+    date: "",
+    refs: [],
+    parents: [],
+    lane: 0,
+    color: 0,
+    incomingColor: null,
+    edges: [],
+  };
+}
+
 /** Full detail for one commit, including changed files with stats. */
 export const commitDetail = defineRpc({
   name: "gittree.commit",

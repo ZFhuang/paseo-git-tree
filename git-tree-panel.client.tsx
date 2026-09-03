@@ -12,6 +12,8 @@ import {
   gitTree,
   graphColor,
   assignRefColors,
+  isUncommittedHash,
+  uncommittedRow,
   type CommitCompareOutput,
   type CommitCompareDiffOutput,
   type CommitDetailOutput,
@@ -492,6 +494,108 @@ function CommitMenu({
   );
 }
 
+function FileMenu({
+  x,
+  y,
+  path,
+  colors,
+  onFilter,
+  onCopy,
+  onDismiss,
+}: {
+  x: number;
+  y: number;
+  path: string;
+  colors: FloatColors;
+  onFilter: () => void;
+  onCopy: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <>
+      <Pressable
+        onPress={onDismiss}
+        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          minWidth: 220,
+          maxWidth: 360,
+          zIndex: 42,
+          backgroundColor: colors.surface,
+          borderRadius: CARD_RADIUS,
+          borderWidth: 1,
+          borderColor: colors.ring,
+          paddingVertical: 4,
+          ...FLOAT_SHADOW,
+        }}
+      >
+        <MenuItem label="Filter commits by this file" hint={`f: ${path}`} colors={colors} onPress={onFilter} />
+        <MenuItem label="Copy path" hint={path} colors={colors} onPress={onCopy} />
+      </View>
+    </>
+  );
+}
+
+const SCOPE_OPTIONS: Array<{ value: TreeScope; short: string; label: string; hint: string }> = [
+  { value: "current", short: "Branch", label: "Current branch", hint: "Only the checked-out branch" },
+  { value: "local", short: "Local", label: "Local branches", hint: "All local heads, no remotes" },
+  { value: "all", short: "All", label: "All refs", hint: "Local, remotes, and tags" },
+];
+
+function ScopeMenu({
+  x,
+  y,
+  scope,
+  colors,
+  onSelect,
+  onDismiss,
+}: {
+  x: number;
+  y: number;
+  scope: TreeScope;
+  colors: FloatColors;
+  onSelect: (scope: TreeScope) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <>
+      <Pressable
+        onPress={onDismiss}
+        style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 41 }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          minWidth: 200,
+          zIndex: 42,
+          backgroundColor: colors.surface,
+          borderRadius: CARD_RADIUS,
+          borderWidth: 1,
+          borderColor: colors.ring,
+          paddingVertical: 4,
+          ...FLOAT_SHADOW,
+        }}
+      >
+        {SCOPE_OPTIONS.map((opt) => (
+          <MenuItem
+            key={opt.value}
+            label={scope === opt.value ? `✓  ${opt.label}` : opt.label}
+            hint={opt.hint}
+            colors={colors}
+            onPress={() => onSelect(opt.value)}
+          />
+        ))}
+      </View>
+    </>
+  );
+}
+
 type BranchHead = { name: string; hash: string; isCurrent: boolean };
 
 function BranchNameRow({
@@ -889,22 +993,26 @@ function FileRow({
   expanded,
   colors,
   onToggle,
+  onOpenMenu,
 }: {
   file: CommitDetailOutput["files"][number];
   expanded: boolean;
   colors: { fg: string; fgMuted: string; added: string; removed: string; border: string; accent: string; hoverBg: string };
   onToggle: () => void;
+  onOpenMenu: (path: string, pageX: number, pageY: number) => void;
 }) {
   const statusLabel =
-    file.status === "A" || file.status === "C"
-      ? "A"
-      : file.status === "D"
-        ? "D"
-        : file.status === "R"
-          ? "R"
-          : "M";
+    file.status === "?"
+      ? "?"
+      : file.status === "A" || file.status === "C"
+        ? "A"
+        : file.status === "D"
+          ? "D"
+          : file.status === "R"
+            ? "R"
+            : "M";
   const statusColor =
-    file.status === "A" || file.status === "C"
+    file.status === "A" || file.status === "C" || file.status === "?"
       ? colors.added
       : file.status === "D"
         ? colors.removed
@@ -912,11 +1020,22 @@ function FileRow({
           ? colors.accent
           : colors.fgMuted;
   const [hovered, setHovered] = useState(false);
+  const openMenu = (pageX: number, pageY: number) => {
+    onOpenMenu(file.path, pageX, pageY);
+  };
   return (
     <Pressable
       onPress={onToggle}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
+      onLongPress={(e) => openMenu(e.nativeEvent.pageX, e.nativeEvent.pageY)}
+      {...({
+        onContextMenu: (e: WebContextMenuEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openMenu(e.nativeEvent.pageX, e.nativeEvent.pageY);
+        },
+      } as object)}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -994,6 +1113,7 @@ function CommitExpansion({
   theme,
   expandedFile,
   onToggleFile,
+  onOpenFileMenu,
   graphW,
 }: {
   directory: string;
@@ -1001,6 +1121,7 @@ function CommitExpansion({
   theme: PluginWorkspacePanelProps["theme"];
   expandedFile: string | null;
   onToggleFile: (path: string) => void;
+  onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
   graphW: number;
 }) {
   const getDetail = useRpc(commitDetail);
@@ -1081,7 +1202,9 @@ function CommitExpansion({
       <View style={{ gap: 4 }}>
         <MetaRow label="Author" colors={colors}>
           <Text style={{ color: colors.fg, fontSize: 12 }}>{detail.author}</Text>
-          <Text style={{ color: colors.fgMuted, fontSize: 11 }}> &lt;{detail.email}&gt;</Text>
+          {detail.email ? (
+            <Text style={{ color: colors.fgMuted, fontSize: 11 }}> &lt;{detail.email}&gt;</Text>
+          ) : null}
         </MetaRow>
         <MetaRow label="Date" colors={colors}>
           <Text style={{ color: colors.fg, fontSize: 12, fontFamily: "monospace" }}>
@@ -1132,6 +1255,7 @@ function CommitExpansion({
               colors={colors}
               expanded={expandedFile === file.path}
               onToggle={() => onToggleFile(file.path)}
+              onOpenMenu={onOpenFileMenu}
             />
             {expandedFile === file.path ? (
               <InlineDiff
@@ -1156,6 +1280,7 @@ function CompareExpansion({
   theme,
   expandedFile,
   onToggleFile,
+  onOpenFileMenu,
   graphW,
 }: {
   directory: string;
@@ -1164,6 +1289,7 @@ function CompareExpansion({
   theme: PluginWorkspacePanelProps["theme"];
   expandedFile: string | null;
   onToggleFile: (path: string) => void;
+  onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
   graphW: number;
 }) {
   const getCompare = useRpc(commitCompare);
@@ -1259,6 +1385,7 @@ function CompareExpansion({
               colors={colors}
               expanded={expandedFile === file.path}
               onToggle={() => onToggleFile(file.path)}
+              onOpenMenu={onOpenFileMenu}
             />
             {expandedFile === file.path ? (
               <InlineDiff
@@ -1311,6 +1438,7 @@ const CommitRow = memo(function CommitRow({
   onHideTip,
   onHeight,
   tintFor,
+  onOpenFileMenu,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
@@ -1335,6 +1463,7 @@ const CommitRow = memo(function CommitRow({
   onHideTip: () => void;
   onHeight: (index: number, height: number) => void;
   tintFor: (name: string) => string;
+  onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
 }) {
   const cardRef = useRef<View>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1356,7 +1485,8 @@ const CommitRow = memo(function CommitRow({
     ? [headBranch, ...branchRefs.filter((r) => r !== headBranch)]
     : branchRefs;
   const tags = row.refs.filter((r) => r.startsWith("tag:")).map((t) => t.slice(5));
-  const isHead = headRef !== undefined || row.refs.includes("HEAD");
+  const isUncommitted = isUncommittedHash(row.hash);
+  const isHead = headRef !== undefined || row.refs.includes("HEAD") || isUncommitted;
   const [hovered, setHovered] = useState(false);
 
   const rowBg = expanded
@@ -1413,7 +1543,7 @@ const CommitRow = memo(function CommitRow({
       <Pressable
         onPress={(e) => {
           const ne = e.nativeEvent as { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean };
-          if (ne.ctrlKey || ne.metaKey || ne.altKey) onCompareClick(row);
+          if (!isUncommitted && (ne.ctrlKey || ne.metaKey || ne.altKey)) onCompareClick(row);
           else onToggle(row.hash);
         }}
         onHoverIn={() => {
@@ -1562,6 +1692,7 @@ const CommitRow = memo(function CommitRow({
             theme={theme}
             expandedFile={expandedFile}
             onToggleFile={onToggleFile}
+            onOpenFileMenu={onOpenFileMenu}
             graphW={graphW}
           />
         </View>
@@ -1576,69 +1707,17 @@ const CommitRow = memo(function CommitRow({
             theme={theme}
             expandedFile={expandedFile}
             onToggleFile={onToggleFile}
+            onOpenFileMenu={onOpenFileMenu}
             graphW={graphW}
           />
         </View>
       ) : null}
       </View>
       <View style={{ height: CARD_GAP }} />
-      <GraphSlice row={row} prevRow={prevRow} height={sliceH} graphW={graphW} />
+      {isUncommitted ? null : <GraphSlice row={row} prevRow={prevRow} height={sliceH} graphW={graphW} />}
     </View>
   );
 });
-
-/** Pseudo-row above HEAD summarizing index + worktree + untracked changes. */
-function UncommittedRow({
-  summary,
-  graphW,
-  colors,
-}: {
-  summary: NonNullable<GitTreeOutput["uncommitted"]>;
-  graphW: number;
-  colors: RowColors;
-}) {
-  return (
-    <View style={{ marginBottom: CARD_GAP, paddingLeft: graphW }}>
-      <View
-        style={{
-          backgroundColor: colors.cardBg,
-          borderRadius: CARD_RADIUS,
-          borderWidth: 1,
-          borderColor: colors.hairline,
-          borderStyle: "dashed" as const,
-          paddingVertical: 6,
-          paddingHorizontal: 12,
-        }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Text style={{ color: colors.fg, fontSize: 12, fontWeight: "600" }}>
-            Uncommitted changes
-          </Text>
-          {summary.untracked > 0 ? (
-            <Text style={{ color: colors.fgMuted, fontSize: 10 }}>
-              +{summary.untracked} untracked
-            </Text>
-          ) : null}
-        </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 }}>
-          <Text style={{ color: colors.fgMuted, fontSize: 10 }}>
-            {summary.count} file{summary.count === 1 ? "" : "s"}
-          </Text>
-          {summary.additions > 0 ? (
-            <Text style={{ color: colors.success, fontSize: 10, fontFamily: "monospace" }}>
-              +{summary.additions}
-            </Text>
-          ) : null}
-          {summary.deletions > 0 ? (
-            <Text style={{ color: colors.fgMuted, fontSize: 10, fontFamily: "monospace" }}>
-              −{summary.deletions}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-    </View>
-  );
-}
 
 // --- Windowed list -------------------------------------------------------------
 
@@ -1709,6 +1788,7 @@ function VirtualCommitList({
   onHideTip,
   onScrollDismiss,
   tintFor,
+  onOpenFileMenu,
 }: {
   rows: GitTreeRow[];
   graphW: number;
@@ -1729,27 +1809,30 @@ function VirtualCommitList({
   onHideTip: () => void;
   onScrollDismiss: () => void;
   tintFor: (name: string) => string;
+  onOpenFileMenu: (path: string, pageX: number, pageY: number) => void;
 }) {
+  const listRows = useMemo(
+    () => (uncommitted ? [uncommittedRow(uncommitted), ...rows] : rows),
+    [rows, uncommitted],
+  );
   const expandedIndex = useMemo(
     () =>
       compareTarget
-        ? rows.findIndex((r) => r.hash === compareTarget.hash)
+        ? listRows.findIndex((r) => r.hash === compareTarget.hash)
         : expandedHash
-          ? rows.findIndex((r) => r.hash === expandedHash)
+          ? listRows.findIndex((r) => r.hash === expandedHash)
           : -1,
-    [rows, expandedHash, compareTarget],
+    [listRows, expandedHash, compareTarget],
   );
   const [collapsedH, setCollapsedH] = useState(COLLAPSED_ROW_H);
   const [expandedH, setExpandedH] = useState(COLLAPSED_ROW_H);
-  /** Measured height of the uncommitted pseudo-row (0 when absent). */
-  const [uncommittedH, setUncommittedH] = useState(0);
   const collapsedLocked = useRef(false);
   const expandedIndexRef = useRef(expandedIndex);
   expandedIndexRef.current = expandedIndex;
   const viewportRef = useRef(0);
   const scrollYRef = useRef(0);
-  const rangeRef = useRef({ start: 0, end: Math.min(rows.length, LIST_OVERSCAN * 2 + 12) });
-  const [range, setRange] = useState(rangeRef.current);
+  const rangeRef = useRef({ start: 0, end: Math.min(listRows.length, LIST_OVERSCAN * 2 + 12) });
+  const [, setRange] = useState(rangeRef.current);
 
   const applyRange = useCallback(
     (scrollY: number, viewportH: number, count: number, expIdx: number, expH: number, rowH: number) => {
@@ -1764,15 +1847,15 @@ function VirtualCommitList({
 
   useEffect(() => {
     collapsedLocked.current = false;
-  }, [rows]);
+  }, [listRows]);
 
   useEffect(() => {
     setExpandedH(COLLAPSED_ROW_H);
   }, [expandedHash]);
 
   useEffect(() => {
-    applyRange(scrollYRef.current, viewportRef.current, rows.length, expandedIndex, expandedH, collapsedH);
-  }, [applyRange, rows.length, expandedIndex, expandedH, collapsedH]);
+    applyRange(scrollYRef.current, viewportRef.current, listRows.length, expandedIndex, expandedH, collapsedH);
+  }, [applyRange, listRows.length, expandedIndex, expandedH, collapsedH]);
 
   const onHeight = useCallback((index: number, height: number) => {
     if (height <= 0) return;
@@ -1787,11 +1870,25 @@ function VirtualCommitList({
   }, []);
 
   const extra = expandedIndex >= 0 ? Math.max(0, expandedH - collapsedH) : 0;
-  const totalH = LIST_PAD_Y * 2 + rows.length * collapsedH + extra + uncommittedH;
+  const totalH = LIST_PAD_Y * 2 + listRows.length * collapsedH + extra;
 
+  // Derive the window from the current list on every render. Range state can
+  // lag a shrink (path filter / scope change) by one frame, and reading
+  // listRows[i].hash past the new length is what crashed the panel.
+  const count = listRows.length;
+  const vis = windowRange(
+    scrollYRef.current,
+    viewportRef.current,
+    count,
+    collapsedH,
+    expandedIndex,
+    expandedH,
+  );
   const indices: number[] = [];
-  for (let i = range.start; i < range.end; i++) indices.push(i);
-  if (expandedIndex >= 0 && (expandedIndex < range.start || expandedIndex >= range.end)) {
+  for (let i = vis.start; i < vis.end; i++) {
+    if (i >= 0 && i < count) indices.push(i);
+  }
+  if (expandedIndex >= 0 && expandedIndex < count && (expandedIndex < vis.start || expandedIndex >= vis.end)) {
     indices.push(expandedIndex);
     indices.sort((a, b) => a - b);
   }
@@ -1804,48 +1901,42 @@ function VirtualCommitList({
         const h = e.nativeEvent.layout.height;
         if (h <= 0) return;
         viewportRef.current = h;
-        applyRange(scrollYRef.current, h, rows.length, expandedIndex, expandedH, collapsedH);
+        applyRange(scrollYRef.current, h, listRows.length, expandedIndex, expandedH, collapsedH);
       }}
       onScroll={(e) => {
         onScrollDismiss();
         const y = e.nativeEvent.contentOffset.y;
         scrollYRef.current = y;
-        applyRange(y, viewportRef.current, rows.length, expandedIndex, expandedH, collapsedH);
+        applyRange(y, viewportRef.current, listRows.length, expandedIndex, expandedH, collapsedH);
       }}
       scrollEventThrottle={16}
     >
       <View style={{ height: totalH, position: "relative" as const, overflow: "visible" as const }}
         onLayout={undefined}
       >
-        {uncommitted ? (
+        {indices.map((i) => {
+          const row = listRows[i];
+          if (!row) return null;
+          const prev = i > 0 ? listRows[i - 1] : undefined;
+          return (
           <View
-            onLayout={(e) => {
-              const h = e.nativeEvent.layout.height + CARD_GAP;
-              setUncommittedH((cur) => (Math.abs(cur - h) > 0.5 ? h : cur));
-            }}
-          >
-            <UncommittedRow summary={uncommitted} graphW={graphW} colors={colors} />
-          </View>
-        ) : null}
-        {indices.map((i) => (
-          <View
-            key={`${rows[i].hash}-${i}`}
+            key={`${row.hash}-${i}`}
             style={{
               position: "absolute" as const,
-              top: uncommittedH + itemOffset(i, collapsedH, expandedIndex, expandedH),
+              top: itemOffset(i, collapsedH, expandedIndex, expandedH),
               left: 0,
               right: 0,
             }}
           >
             <CommitRow
-              row={rows[i]}
-              prevRow={i > 0 ? rows[i - 1] : undefined}
+              row={row}
+              prevRow={prev && !isUncommittedHash(prev.hash) ? prev : undefined}
               index={i}
               graphW={graphW}
               colors={colors}
               compact={compact}
-              expanded={expandedHash === rows[i].hash}
-              expandedFile={expandedHash === rows[i].hash ? expandedFile : null}
+              expanded={expandedHash === row.hash}
+              expandedFile={expandedHash === row.hash ? expandedFile : null}
               compareBase={compareBase}
               compareTarget={compareTarget}
               onToggle={onToggle}
@@ -1858,9 +1949,11 @@ function VirtualCommitList({
               onHideTip={onHideTip}
               onHeight={onHeight}
               tintFor={tintFor}
+              onOpenFileMenu={onOpenFileMenu}
             />
           </View>
-        ))}
+          );
+        })}
       </View>
     </ScrollView>
   );
@@ -1879,6 +1972,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const toast = useToast();
   const shellRef = useRef<View>(null);
   const branchTriggerRef = useRef<View>(null);
+  const scopeTriggerRef = useRef<View>(null);
 
   const directory = workspace?.directory ?? null;
   const [data, setData] = useState<GitTreeOutput | null>(null);
@@ -1902,10 +1996,13 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [compareTarget, setCompareTarget] = useState<GitTreeRow | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; row: GitTreeRow } | null>(null);
+  const [fileMenu, setFileMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number } | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
   const [scope, setScope] = useState<TreeScope>("all");
+  const [scopeMenu, setScopeMenu] = useState<{ x: number; y: number } | null>(null);
+  const [scopeHover, setScopeHover] = useState(false);
   const [refreshHover, setRefreshHover] = useState(false);
   const [searchHover, setSearchHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
@@ -1972,25 +2069,41 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     menuOpen.current = false;
     setTip(null);
     setMenu(null);
+    setFileMenu(null);
     setBranchMenu(null);
+    setScopeMenu(null);
   }, []);
 
   const handleOpenMenu = useCallback(
     (row: GitTreeRow, pageX: number, pageY: number) => {
       menuOpen.current = true;
       setTip(null);
+      setFileMenu(null);
       setBranchMenu(null);
+      setScopeMenu(null);
       placeAt(pageX, pageY, 208, 92, (x, y) => setMenu({ x, y, row }));
+    },
+    [placeAt],
+  );
+
+  const handleOpenFileMenu = useCallback(
+    (path: string, pageX: number, pageY: number) => {
+      menuOpen.current = true;
+      setTip(null);
+      setMenu(null);
+      setBranchMenu(null);
+      setScopeMenu(null);
+      placeAt(pageX, pageY, 240, 92, (x, y) => setFileMenu({ x, y, path }));
     },
     [placeAt],
   );
 
   const handleShowTip = useCallback(
     (row: GitTreeRow, pageX: number, pageY: number) => {
-      if (menuOpen.current || branchMenu) return;
+      if (menuOpen.current || branchMenu || scopeMenu || fileMenu) return;
       placeAt(pageX, pageY, 308, 88, (x, y) => setTip({ x, y, row }));
     },
-    [placeAt, branchMenu],
+    [placeAt, branchMenu, scopeMenu, fileMenu],
   );
 
   const handleHideTip = useCallback(() => setTip(null), []);
@@ -2000,6 +2113,8 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     menuOpen.current = false;
     setMenu(null);
     setTip(null);
+    setScopeMenu(null);
+    setFileMenu(null);
     const node = branchTriggerRef.current;
     if (!node || typeof node.measureInWindow !== "function") {
       setBranchMenu({ x: 8, y: 40 });
@@ -2009,6 +2124,23 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       placeAt(x, y + h + 6, 268, 320, (lx, ly) => setBranchMenu({ x: lx, y: ly }));
     });
   }, [branchMenu, placeAt]);
+
+  const openScopeMenu = useCallback(() => {
+    if (scopeMenu) return;
+    menuOpen.current = false;
+    setMenu(null);
+    setTip(null);
+    setBranchMenu(null);
+    setFileMenu(null);
+    const node = scopeTriggerRef.current;
+    if (!node || typeof node.measureInWindow !== "function") {
+      setScopeMenu({ x: 8, y: 40 });
+      return;
+    }
+    node.measureInWindow((x, y, _w, h) => {
+      placeAt(x, y + h + 6, 220, 180, (lx, ly) => setScopeMenu({ x: lx, y: ly }));
+    });
+  }, [scopeMenu, placeAt]);
 
   const handleBranchOp = useCallback(
     (op: GitBranchOp | "copy", name?: string) => {
@@ -2160,42 +2292,6 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
                 : `${rows.length} commit${rows.length === 1 ? "" : "s"}`}
             </Text>
           ) : null}
-          <View style={{ flexDirection: "row", gap: 4, marginTop: 4 }}>
-            {(
-              [
-                ["current", "Branch"],
-                ["local", "Local"],
-                ["all", "All"],
-              ] as const
-            ).map(([value, label]) => {
-              const active = scope === value;
-              return (
-                <Pressable
-                  key={value}
-                  accessibilityRole="button"
-                  onPress={() => setScope(value)}
-                  style={{
-                    paddingHorizontal: 7,
-                    paddingVertical: 2,
-                    borderRadius: 5,
-                    borderWidth: 1,
-                    borderColor: active ? theme.colors.accent + "99" : theme.colors.border + "66",
-                    backgroundColor: active ? theme.colors.accent + "22" : "transparent",
-                  }}
-                >
-                  <Text
-                    style={{
-                      fontSize: 10,
-                      fontWeight: active ? "700" : "500",
-                      color: active ? theme.colors.accent : theme.colors.foregroundMuted,
-                    }}
-                  >
-                    {label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
         </View>
         {triggerName ? (
           <View ref={branchTriggerRef} style={{ flexShrink: 1, minWidth: 0, marginRight: 4 }}>
@@ -2241,6 +2337,40 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             </Pressable>
           </View>
         ) : null}
+        <View ref={scopeTriggerRef}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Filter refs"
+            onPress={openScopeMenu}
+            onHoverIn={() => setScopeHover(true)}
+            onHoverOut={() => setScopeHover(false)}
+            hitSlop={8}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 3,
+              paddingHorizontal: 6,
+              paddingVertical: 6,
+              borderRadius: 6,
+              backgroundColor: scopeHover || scopeMenu || scope !== "all" ? theme.colors.surface1 : "transparent",
+            }}
+          >
+            <Icon
+              name="Filter"
+              size={14}
+              color={scope !== "all" || scopeMenu ? theme.colors.accent : theme.colors.foreground}
+            />
+            <Text
+              style={{
+                fontSize: 11,
+                fontWeight: scope !== "all" ? "700" : "500",
+                color: scope !== "all" || scopeMenu ? theme.colors.accent : theme.colors.foregroundMuted,
+              }}
+            >
+              {SCOPE_OPTIONS.find((o) => o.value === scope)?.short ?? "All"}
+            </Text>
+          </Pressable>
+        </View>
         <Pressable
           accessibilityRole="button"
           onPress={() => {
@@ -2356,10 +2486,13 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           onHideTip={handleHideTip}
           onScrollDismiss={dismissFloats}
           tintFor={tintFor}
+          onOpenFileMenu={handleOpenFileMenu}
         />
       )}
 
-      {tip && !menu && !branchMenu ? <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} /> : null}
+      {tip && !menu && !fileMenu && !branchMenu && !scopeMenu ? (
+        <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} />
+      ) : null}
       {menu ? (
         <CommitMenu
           x={menu.x}
@@ -2382,6 +2515,34 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           }}
         />
       ) : null}
+      {fileMenu ? (
+        <FileMenu
+          x={fileMenu.x}
+          y={fileMenu.y}
+          path={fileMenu.path}
+          colors={floatColors}
+          onDismiss={() => {
+            menuOpen.current = false;
+            setFileMenu(null);
+          }}
+          onFilter={() => {
+            const path = fileMenu.path;
+            menuOpen.current = false;
+            setFileMenu(null);
+            setSearching(true);
+            setQuery(`f: ${path}`);
+          }}
+          onCopy={() => {
+            const path = fileMenu.path;
+            void copyToClipboard(path).then((ok) => {
+              menuOpen.current = false;
+              setFileMenu(null);
+              if (ok) toast.show("Copied path");
+              else toast.error("Couldn't copy");
+            });
+          }}
+        />
+      ) : null}
       {branchMenu ? (
         <BranchMenu
           x={branchMenu.x}
@@ -2392,6 +2553,19 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           tintFor={tintFor}
           onDismiss={() => setBranchMenu(null)}
           onOp={handleBranchOp}
+        />
+      ) : null}
+      {scopeMenu ? (
+        <ScopeMenu
+          x={scopeMenu.x}
+          y={scopeMenu.y}
+          scope={scope}
+          colors={floatColors}
+          onDismiss={() => setScopeMenu(null)}
+          onSelect={(next) => {
+            setScope(next);
+            setScopeMenu(null);
+          }}
         />
       ) : null}
     </View>
