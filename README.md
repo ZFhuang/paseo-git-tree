@@ -1,55 +1,118 @@
 # paseo-git-tree
 
-在 Paseo 的 explorer 侧边栏里显示当前 workspace 的 git 分支树（`git log --graph --all`），
-与「文件」「更改」并列的一个 tab。
+**A git branch tree for Paseo — `git log --graph --all` in your sidebar.**
 
-## 功能
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-- Explorer 侧边栏 tab（也可以作为普通 workspace tab 打开）
-- 窗口化渲染分支拓扑（默认 500 条，最多 2000），展开卡片时点和线位置不变
-- 顶部当前分支下拉：左键预览该分支历史（不 checkout），右键或 ⋯ 打开操作（checkout / merge / rebase / push / pull / fetch / rename / delete）
-- 图上的分支芯片：左键预览，右键打开与顶栏相同的分支操作；右键 commit 可 create branch / checkout / cherry-pick / revert / merge / rebase / reset / tag
-- 显示 commit 主题、作者、相对时间、ref 装饰（HEAD / 分支名 / tag），分支名与下拉使用同一套颜色
-- 范围切换：默认 Branch（当前分支 + upstream 标签）；Local（本地分支）；All（含 remote，其它分支 tip 才会标在图上）
-- 搜索框：按 message / 作者 / hash / 分支名过滤；`f: <路径>` 按文件过滤（覆盖已加载窗口外的历史）
-- Ctrl/Cmd 点击两个 commit：任意两者对比，展开逐文件 diff
-- 顶部未提交改动摘要卡（修改 + 新增文件数、± 行数）
-- rename 感知的文件列表（显示 R 状态与 old ⟶ new）
-- 刷新按钮手动重新加载
+A [Paseo](https://paseo.sh) plugin that renders the current workspace's branch
+history as a lane-based commit graph, alongside the File and Changes tabs in
+the explorer sidebar.
 
-## 安装
+## Features
 
-在运行 Paseo daemon 的机器上：
+| Feature | Description |
+|---------|-------------|
+| **Explorer tab** | Branch tree as a sidebar tab (also openable as a normal workspace panel). |
+| **Windowed graph** | Lane-based topology rendering — 500 commits by default, up to 2000 — with dot and line positions that stay put when a card expands. |
+| **Branch picker** | Current-branch dropdown in the header: left-click to preview a branch's history (no checkout), right-click or ⋯ for checkout / merge / rebase / push / pull / fetch / rename / delete. |
+| **Branch chips** | On-graph branch chips: left-click previews, right-click opens the same branch menu as the header. Right-click a commit for create branch / checkout / cherry-pick / revert / merge / rebase / reset / tag. |
+| **Commit cards** | Subject, author, relative time, ref decorations (HEAD / branch names / tags), with branch names sharing one color system between chips and the dropdown. |
+| **Scope switch** | Branch (current branch + upstream label), Local (local branches), All (including remotes — other branch tips appear on the graph). |
+| **Search** | Match message / author / hash / branch name; `f: <path>` filters by file across history beyond the loaded window. |
+| **Compare** | Ctrl/Cmd-click two commits to diff them; expands to a per-file diff view. |
+| **Uncommitted card** | Working-tree summary at the top: changed + untracked file counts and ± line counts. |
+| **Expandable cards** | Click a commit to expand full detail (author, date, parents, message body, per-file diff). Expanded cards refresh in place on fetch/reload. |
+| **Rename-aware files** | File lists show R status with old ⟶ new paths. |
+| **Manual refresh** | ↻ button in the panel header. |
+
+## Install
 
 ```bash
 git clone <this-repo>
-paseo plugin install "<absolute-path>/paseo-git-tree"
+cd paseo-git-tree
+npm install
+
+# Install into Paseo
+paseo plugin install /absolute/path/to/paseo-git-tree
+
+# Verify it's running
+paseo plugin ls
 ```
 
-前置条件：
+Requirements:
 
-- Paseo 0.5.0-beta 或更新（local plugin 支持）
-- daemon 的 `config.json` 里 `pluginsEnabled: true`（Settings → Plugins 里开启）
+- Paseo 0.5.0-beta or newer (local plugin support)
+- `pluginsEnabled: true` in the daemon's `config.json` (Settings → Plugins)
 
-## 使用
+## Usage
 
-1. 打开任意项目，点击右上角侧边栏切换按钮
-2. 在「文件」「更改」旁边找到 **Git Tree** tab
-3. 点击查看该 workspace 的分支树
+1. Open any project, click the sidebar switch button in the top-right corner.
+2. Find the **Git Tree** tab next to **File** and **Changes**.
+3. Click commits to expand; click branch chips to preview branches.
 
-刷新：点面板右上角的 ↻ 图标。
+**Refresh:** ↻ icon in the panel header.
 
-搜索：点🔍图标打开输入框，直接输入匹配 message/作者/hash/分支名；输入 `f: 路径`（如 `f: src/foo.ts`）改为按文件过滤，覆盖整个仓库历史而不只是已加载的 500 条。
+**Search:** 🔍 opens the input. Type to match message/author/hash/branch name;
+`f: path` (e.g. `f: src/foo.ts`) filters by file across the whole repository
+history, not just the loaded 500 commits.
 
-对比：Ctrl/Cmd 点击第一个 commit 设为基点（行上标 ⇔ base），再 Ctrl/Cmd 点击第二个 commit 展开两者的逐文件差异；再点基点本身取消。
+**Compare:** Ctrl/Cmd-click the first commit to set it as the base (marked
+⇔ base on the row), then Ctrl/Cmd-click a second commit to expand the per-file
+diff between the two. Click the base row again to cancel.
 
-分支操作：点标题栏里带颜色的当前分支。左键某个分支只预览它的提交图（不切换 HEAD）；再点一次取消预览。Checkout 以及 merge / rebase / push / pull / fetch / rename / delete 都在右键或 ⋯ 菜单里。远程 checkout 会 `git checkout --track` 或切到已有本地分支。新建分支可选择是否立刻 checkout。
+**Branch ops:** click the colored current-branch chip in the header.
+Left-clicking a branch previews its commit graph without moving HEAD; click
+again to cancel the preview. Checkout, merge / rebase / push / pull / fetch /
+rename / delete live in the right-click or ⋯ menu. Remote checkouts use
+`git checkout --track` or switch to an existing local branch. New branches can
+optionally be checked out immediately.
 
-## 类型检查
+## Plugin structure
+
+```
+paseo-git-tree/
+├── paseo-plugin.json        # Manifest (id: "git-tree")
+├── index.ts                 # Entry: RPC handlers + workspace panel registration
+├── git-tree-panel.client.tsx # Panel UI (React Native) — client bundle
+├── git-tree.server.ts       # git subprocess wrapper — server bundle
+├── git-tree.shared.ts       # Zod RPC contracts + pure graph/layout algorithms
+├── git-tree.shared.test.ts  # Logic tests (node:test) incl. seeded random cases
+├── package.json
+├── tsconfig.json
+└── README.md / README.zh-CN.md
+```
+
+## Testing
 
 ```bash
-npm install
-npm run typecheck
+npm test
 ```
 
-改完源码后用 `paseo plugin reload git-tree` 重新加载。
+Pure logic tests on the node built-in test runner (no UI dependencies):
+
+- Hand-picked edge cases: empty graph, single root, linear chains,
+  fork/merge/octopus merges, multi-child convergence, ref parsing and scope
+  rules, list-geometry round-trips.
+- Programmatically generated cases: a seeded PRNG (mulberry32) builds random
+  commit DAGs, ref decorations, and list-geometry parameters, then checks
+  structural invariants (lane continuity, color assignment,
+  `itemOffset`/`indexAtY` inversion, window coverage).
+- Reproducing a failure: test names carry `seed=N`; edit the seed arrays in
+  `git-tree.shared.test.ts` to replay one generation.
+
+## Development
+
+```bash
+# Type-check after changes
+npm run typecheck
+
+# Reload the plugin
+paseo plugin reload git-tree
+
+# Check logs
+paseo plugin logs git-tree
+```
+
+## License
+
+Apache-2.0
