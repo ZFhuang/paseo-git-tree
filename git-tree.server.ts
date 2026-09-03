@@ -62,6 +62,12 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
     // %x1e record / %x1f field separators: hash, parents, author, date, refs, subject.
     const fmt = "%x1e%H%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s%x1e";
     const preview = input.preview?.trim();
+    if (input.sync) {
+      const remotes = await runGit(directory, ["remote"]).catch(() => "");
+      if (remotes.trim()) {
+        await runGit(directory, ["fetch", "--all", "--prune"], 60_000).catch(() => {});
+      }
+    }
     const refs = preview
       ? [assertBranchName(preview)]
       : scope === "current"

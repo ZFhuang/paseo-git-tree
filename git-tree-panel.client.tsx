@@ -2667,6 +2667,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const menuOpen = useRef(false);
   const [scope, setScope] = useState<TreeScope>("current");
   const [previewRef, setPreviewRef] = useState<string | null>(null);
+  const previewHold = useRef<string | null>(null);
+  previewHold.current = previewRef;
+  const loadGen = useRef(0);
   const [scopeMenu, setScopeMenu] = useState<{ x: number; y: number } | null>(null);
   const [scopeHover, setScopeHover] = useState(false);
   const [refreshHover, setRefreshHover] = useState(false);
@@ -2675,24 +2678,38 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [searchHover, setSearchHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
 
-  const refresh = useCallback(() => {
-    if (!directory) return;
-    setLoading(true);
-    getTree({
-      directory,
-      limit: COMMIT_LIMIT,
-      scope,
-      ...(debouncedPath ? { path: debouncedPath } : {}),
-      ...(previewRef ? { preview: previewRef } : {}),
-    })
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [directory, getTree, scope, debouncedPath, previewRef]);
+  const loadTree = useCallback(
+    (opts?: { sync?: boolean; preview?: string | null }) => {
+      if (!directory) return;
+      const preview = opts && "preview" in opts ? opts.preview : previewHold.current;
+      const id = ++loadGen.current;
+      setLoading(true);
+      getTree({
+        directory,
+        limit: COMMIT_LIMIT,
+        scope,
+        ...(debouncedPath ? { path: debouncedPath } : {}),
+        ...(preview ? { preview } : {}),
+        ...(opts?.sync ? { sync: true } : {}),
+      })
+        .then((next) => {
+          if (id === loadGen.current) setData(next);
+        })
+        .catch(() => {
+          if (id === loadGen.current) setData(null);
+        })
+        .finally(() => {
+          if (id === loadGen.current) setLoading(false);
+        });
+    },
+    [directory, getTree, scope, debouncedPath],
+  );
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    loadTree();
+  }, [loadTree]);
+
+  const refresh = useCallback(() => loadTree({ sync: true }), [loadTree]);
 
   const toggleCommit = useCallback((hash: string) => {
     setExpandedHash((cur) => (cur === hash ? null : hash));
@@ -2857,20 +2874,30 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             fetch: req.name ? `Fetched ${req.name}` : "Fetched",
           };
           toast.show(done[op]);
-          refresh();
-          if (op === "checkout" || (op === "create" && req.checkOut !== false)) setPreviewRef(null);
+          const clearPreview = op === "checkout" || (op === "create" && req.checkOut !== false);
+          if (clearPreview) {
+            previewHold.current = null;
+            setPreviewRef(null);
+          }
+          loadTree({ sync: true, ...(clearPreview ? { preview: null } : {}) });
           setBranchMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
         .finally(() => setBranchBusy(false));
     },
-    [directory, branchBusy, runBranch, toast, refresh],
+    [directory, branchBusy, runBranch, toast, loadTree],
   );
 
-  const handlePreview = useCallback((name: string) => {
-    setPreviewRef((cur) => (cur === name ? null : name));
-    setBranchMenu(null);
-  }, []);
+  const handlePreview = useCallback(
+    (name: string) => {
+      const next = previewHold.current === name ? null : name;
+      previewHold.current = next;
+      setPreviewRef(next);
+      setBranchMenu(null);
+      loadTree({ preview: next });
+    },
+    [loadTree],
+  );
 
   const handleOpenBranchChip = useCallback(
     (head: BranchHead, pageX: number, pageY: number) => {
@@ -2918,20 +2945,21 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             "create-branch": req.name ? `Created ${req.name}` : "Created branch",
           };
           toast.show(done[req.op]);
-          if (
+          const clearPreview =
             req.op === "checkout" ||
             req.op === "reset" ||
-            (req.op === "create-branch" && req.checkOut !== false)
-          ) {
+            (req.op === "create-branch" && req.checkOut !== false);
+          if (clearPreview) {
+            previewHold.current = null;
             setPreviewRef(null);
           }
-          refresh();
+          loadTree({ sync: true, ...(clearPreview ? { preview: null } : {}) });
           setMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
         .finally(() => setBranchBusy(false));
     },
-    [directory, branchBusy, runCommit, toast, refresh],
+    [directory, branchBusy, runCommit, toast, loadTree],
   );
 
   const colors: RowColors = useMemo(
@@ -3383,6 +3411,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           colors={floatColors}
           onDismiss={() => setScopeMenu(null)}
           onSelect={(next) => {
+            previewHold.current = null;
             setPreviewRef(null);
             setScope(next);
             setScopeMenu(null);

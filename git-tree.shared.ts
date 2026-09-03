@@ -50,6 +50,8 @@ export const gitTree = defineRpc({
     scope: treeScope.default("current"),
     /** Show this ref's history without checking it out. */
     preview: z.string().min(1).optional(),
+    /** Best-effort `git fetch --all --prune` before reading the log. */
+    sync: z.boolean().optional(),
     /** Only commits touching this path (file or directory). Optional. */
     path: z.string().optional(),
   }),
