@@ -1,8 +1,25 @@
 {
   "name": "paseo-git-tree",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
-  "description": "Git branch tree sidebar plugin for Paseo",
+  "description": "Git branch tree panel for Paseo: a lane-based commit graph (git log --graph) as a workspace tab, with branch actions, search, and commit diffs",
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "git",
+    "git-log",
+    "git-graph",
+    "commit-graph"
+  ],
+  "homepage": "https://github.com/ZFhuang/paseo-git-tree#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZFhuang/paseo-git-tree.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZFhuang/paseo-git-tree/issues"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test git-tree.shared.test.ts"

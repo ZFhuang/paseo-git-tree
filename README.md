@@ -26,7 +26,7 @@ A [Paseo](https://paseo.sh) plugin that draws the current workspace's branch his
 ## Install
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/ZFhuang/paseo-git-tree.git
 cd paseo-git-tree
 npm install
 
@@ -116,6 +116,7 @@ paseo-git-tree/
 ├── git-tree.shared.test.ts  # Logic tests (node:test) incl. seeded random cases
 ├── package.json
 ├── tsconfig.json
+├── LICENSE
 └── README.md / README.zh-CN.md
 ```
 
@@ -146,4 +147,4 @@ paseo plugin logs git-tree
 
 ## License
 
-Apache-2.0
+MIT — see [LICENSE](./LICENSE).

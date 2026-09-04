@@ -26,7 +26,7 @@
 ## 安装
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/ZFhuang/paseo-git-tree.git
 cd paseo-git-tree
 npm install
 
@@ -116,6 +116,7 @@ paseo-git-tree/
 ├── git-tree.shared.test.ts  # 逻辑测试(node:test),含种子随机用例
 ├── package.json
 ├── tsconfig.json
+├── LICENSE
 └── README.md / README.zh-CN.md
 ```
 
@@ -146,4 +147,4 @@ paseo plugin logs git-tree
 
 ## 许可证
 
-Apache-2.0
+MIT —— 详见 [LICENSE](./LICENSE)。
