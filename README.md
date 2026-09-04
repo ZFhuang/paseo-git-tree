@@ -1,26 +1,24 @@
 # paseo-git-tree
 
-**A git branch tree for Paseo — `git log --graph --all` in your sidebar.**
+**A git branch tree for Paseo — `git log --graph` as a panel tab.**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-A [Paseo](https://paseo.sh) plugin that renders the current workspace's branch
-history as a lane-based commit graph, alongside the File and Changes tabs in
-the explorer sidebar.
+A [Paseo](https://paseo.sh) plugin that draws the current workspace's branch history as a lane-based commit graph.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Explorer tab** | Branch tree as a sidebar tab (also openable as a normal workspace panel). |
+| **Workspace tab** | Branch tree as a panel tab; also allowed in the explorer sidebar pane. |
 | **Windowed graph** | Lane-based topology rendering — 500 commits by default, up to 2000 — with dot and line positions that stay put when a card expands. |
 | **Branch picker** | Current-branch dropdown in the header: left-click to preview a branch's history (no checkout), right-click or ⋯ for checkout / merge / rebase / push / pull / fetch / rename / delete. |
 | **Branch chips** | On-graph branch chips: left-click previews, right-click opens the same branch menu as the header. Right-click a commit for create branch / checkout / cherry-pick / revert / merge / rebase / reset / tag. |
 | **Commit cards** | Subject, author, relative time, ref decorations (HEAD / branch names / tags), with branch names sharing one color system between chips and the dropdown. |
-| **Scope switch** | Branch (current branch + upstream label), Local (local branches), All (including remotes — other branch tips appear on the graph). |
-| **Search** | Match message / author / hash / branch name; `f: <path>` filters by file across history beyond the loaded window. |
+| **Scope switch** | Branch (checked-out branch only), Local (all local branches), All (local + remotes + tags). |
+| **Search** | Client-side match on message / author / hash prefix / branch name; `f: <path>` switches to a server-side `git log -- <path>` filter. |
 | **Compare** | Ctrl/Cmd-click two commits to diff them; expands to a per-file diff view. |
-| **Uncommitted card** | Working-tree summary at the top: changed + untracked file counts and ± line counts. |
+| **Uncommitted row** | Working-tree summary at the top: changed + untracked file counts and ± line counts. |
 | **Expandable cards** | Click a commit to expand full detail (author, date, parents, message body, per-file diff). Expanded cards refresh in place on fetch/reload. |
 | **Rename-aware files** | File lists show R status with old ⟶ new paths. |
 | **Manual refresh** | ↻ button in the panel header. |
@@ -41,31 +39,70 @@ paseo plugin ls
 
 Requirements:
 
-- Paseo 0.5.0-beta or newer (local plugin support)
-- `pluginsEnabled: true` in the daemon's `config.json` (Settings → Plugins)
+- Paseo 0.7.2 or newer (local plugin support; verified against the bundled `paseo` CLI)
+- `pluginsEnabled: true` in the daemon's `config.json` (Settings → Plugins in the desktop app)
 
 ## Usage
 
-1. Open any project, click the sidebar switch button in the top-right corner.
-2. Find the **Git Tree** tab next to **File** and **Changes**.
-3. Click commits to expand; click branch chips to preview branches.
+### Opening the panel
 
-**Refresh:** ↻ icon in the panel header.
+The panel registers both the `explorer` and `workspace` locations. Paseo's explorer sidebar only renders its own built-in Files / Changes / Pull request tabs, so plugin panels are not appended there. Open Git Tree from the new-tab menu:
 
-**Search:** 🔍 opens the input. Type to match message/author/hash/branch name;
-`f: path` (e.g. `f: src/foo.ts`) filters by file across the whole repository
-history, not just the loaded 500 commits.
+1. Open a workspace.
+2. Click **+ (New tab)** on the tab strip at the top of the main area.
+3. Pick **Git Tree** from the dropdown. It is listed after the built-in tabs, in the plugin group.
 
-**Compare:** Ctrl/Cmd-click the first commit to set it as the base (marked
-⇔ base on the row), then Ctrl/Cmd-click a second commit to expand the per-file
-diff between the two. Click the base row again to cancel.
+It opens as a regular workspace tab. To open it inside the explorer sidebar pane instead, right-click the sidebar's tab rail and choose **New tab** — that runs the new-tab launcher inside the sidebar, where Git Tree is listed too. Send a sidebar tab back to the main area with its context menu → **Move to main panel**.
 
-**Branch ops:** click the colored current-branch chip in the header.
-Left-clicking a branch previews its commit graph without moving HEAD; click
-again to cancel the preview. Checkout, merge / rebase / push / pull / fetch /
-rename / delete live in the right-click or ⋯ menu. Remote checkouts use
-`git checkout --track` or switch to an existing local branch. New branches can
-optionally be checked out immediately.
+### Header controls
+
+Left to right: title + commit count, current-branch chip, scope filter, search, pull, push, refresh.
+
+| Control | What it does |
+|---------|--------------|
+| **Current branch chip** | Opens the branch list. |
+| **Scope (Filter icon)** | Switch refs: **Branch** (checked-out branch only), **Local** (all local branches), **All** (local + remotes + tags). |
+| **🔍** | Toggles the search input. |
+| **↓ / ↑** | Pull / push the current branch. Push is hidden when the repo has no remotes; both are hidden when HEAD is detached. |
+| **↻** | Reload. Runs `git fetch --all --prune` first when the repo has remotes. |
+
+### Rows
+
+Click a commit to expand it: author, date, parents, message body, and a per-file diff. Hovering shows a tooltip with the full commit message.
+
+When the worktree is dirty, the top row is an **Uncommitted changes** pseudo-commit with the short hash `WT`. Expanding it lists the working-tree files.
+
+Right-click or long-press a row for the commit menu: create branch, checkout (detached), cherry-pick, revert, merge, rebase, reset (mixed / hard), add tag, copy message / hash. Uncommitted rows only offer the copy actions.
+
+### Comparing two commits
+
+Ctrl/Cmd/Alt-click a commit to set it as the base. The row is badged `⇔ base`. Ctrl/Cmd/Alt-click a second commit to expand the per-file diff between the two; that row is badged `⇔ target`. Ctrl-click the base again to cancel.
+
+### Search
+
+Type to match subject, author, hash prefix, or branch name. The graph is re-laid out over the matches.
+
+Prefix the query with `f:` to filter by file instead — for example `f: src/foo.ts`. This runs `git log -- <path>` on the server, so it covers history beyond the loaded window. Input is debounced by 250 ms.
+
+### Branch menu
+
+Click the colored current-branch chip, or right-click a branch chip on the graph to open that ref's actions directly.
+
+The list has a filter box and a `+ Create branch…` entry, which can check the new branch out immediately. Left-clicking a branch previews its history without moving HEAD; click it again to cancel the preview.
+
+Right-click, long-press, or ⋯ opens that branch's actions:
+
+- **Checkout** — remotes use `git checkout --track`, or switch to the existing local branch of the same name.
+- **Merge / rebase** into the current branch.
+- **Pull / fetch** for remotes.
+- **Push**, or force push with `--force-with-lease`.
+- **Rename**, **copy name**, **delete**.
+
+Rebase, force push, and delete ask for a second confirming click.
+
+### File rows
+
+Right-click a file for **Filter commits by this file** (fills in `f: <path>`) or **Copy path**.
 
 ## Plugin structure
 
@@ -88,17 +125,11 @@ paseo-git-tree/
 npm test
 ```
 
-Pure logic tests on the node built-in test runner (no UI dependencies):
+Pure logic tests on the node built-in test runner, with no UI dependencies:
 
-- Hand-picked edge cases: empty graph, single root, linear chains,
-  fork/merge/octopus merges, multi-child convergence, ref parsing and scope
-  rules, list-geometry round-trips.
-- Programmatically generated cases: a seeded PRNG (mulberry32) builds random
-  commit DAGs, ref decorations, and list-geometry parameters, then checks
-  structural invariants (lane continuity, color assignment,
-  `itemOffset`/`indexAtY` inversion, window coverage).
-- Reproducing a failure: test names carry `seed=N`; edit the seed arrays in
-  `git-tree.shared.test.ts` to replay one generation.
+- Hand-picked edge cases: empty graph, single root, linear chains, fork/merge/octopus merges, multi-child convergence, ref parsing and scope rules, list-geometry round-trips.
+- Programmatically generated cases: a seeded PRNG (mulberry32) builds random commit DAGs, ref decorations, and list-geometry parameters, then checks structural invariants — lane continuity, color assignment, `itemOffset`/`indexAtY` inversion, window coverage.
+- Reproducing a failure: test names carry `seed=N`. Edit the seed arrays in `git-tree.shared.test.ts` to replay one generation.
 
 ## Development
 
