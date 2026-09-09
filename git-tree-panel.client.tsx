@@ -3097,9 +3097,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     <View ref={shellRef} style={styles.screen} {...hostMenuBlock}>
       <View style={styles.header}>
         <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
-          <Text style={styles.title}>Git Tree</Text>
+          <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">Git Tree</Text>
           {previewRef || rows.length > 0 ? (
-            <Text style={styles.subtitle}>
+            <Text style={styles.subtitle} numberOfLines={1} ellipsizeMode="tail">
               {previewRef
                 ? `previewing ${previewRef}${rows.length > 0 ? ` · ${rows.length} commit${rows.length === 1 ? "" : "s"}` : ""}`
                 : queryTrim
