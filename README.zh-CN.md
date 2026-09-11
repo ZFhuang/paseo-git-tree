@@ -39,7 +39,7 @@ paseo plugin ls
 
 前置条件:
 
-- Paseo 0.7.2 或更新(local plugin 支持;已用随附的 `paseo` CLI 验证)
+- Paseo 0.8.0 或更新(运行时插件入口;已用随附的 `paseo` CLI 验证)
 - daemon 的 `config.json` 里 `pluginsEnabled: true`(桌面端 Settings → Plugins 里开启)
 
 ## 使用
@@ -109,16 +109,20 @@ rebase、force push、delete 需要再点一次确认。
 ```
 paseo-git-tree/
 ├── paseo-plugin.json        # 清单(id: "git-tree")
-├── index.ts                 # 入口:RPC 处理器 + workspace 面板注册
-├── git-tree-panel.client.tsx # 面板 UI(React Native)—— client bundle
-├── git-tree.server.ts       # git 子进程封装 —— server bundle
-├── git-tree.shared.ts       # Zod RPC 契约 + 纯函数图/布局算法
-├── git-tree.shared.test.ts  # 逻辑测试(node:test),含种子随机用例
+├── index.client.tsx         # 客户端入口:workspace 面板注册
+├── index.server.ts          # 服务端入口:RPC 处理器注册
+├── client/git-tree-panel.tsx # 面板 UI(React Native)—— client bundle
+├── server/git-tree.ts       # git 子进程封装 —— server bundle
+├── shared/git-tree.ts       # Zod RPC 契约 + 纯函数图/布局算法
+├── shared/git-tree.test.ts  # 逻辑测试(node:test),含种子随机用例
 ├── package.json
 ├── tsconfig.json
 ├── LICENSE
 └── README.md / README.zh-CN.md
 ```
+
+`client/`、`server/`、`shared/` 在 Paseo 0.8 里是编译边界:client bundle 只编译
+`client/` + `shared/`,server bundle 只编译 `server/` + `shared/`。
 
 ## 测试
 
@@ -130,7 +134,7 @@ npm test
 
 - 手写边界用例:空图、单根、线性链、fork/merge/octopus、多子收敛、ref 解析与 scope 规则、几何往返。
 - 程序化生成用例:种子 PRNG(mulberry32)随机生成提交 DAG、ref 装饰、列表几何参数,再验证结构性不变量——车道连续性、颜色分配、`itemOffset`/`indexAtY` 互逆、窗口覆盖。
-- 复现失败样本:测试名带 `seed=N`,改 `git-tree.shared.test.ts` 里的种子数组即可重放。
+- 复现失败样本:测试名带 `seed=N`,改 `shared/git-tree.test.ts` 里的种子数组即可重放。
 
 ## 开发
 

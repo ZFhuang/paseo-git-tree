@@ -1,5 +1,5 @@
 /**
- * Logic tests for git-tree.shared.ts — run with `npm test`.
+ * Logic tests for shared/git-tree.ts — run with `npm test`.
  *
  * Two layers:
  *  1. Hand-picked edge cases (deterministic, documented failures).
@@ -29,7 +29,7 @@ import {
   LIST_OVERSCAN,
   type GitTreeRow,
   type GraphInputCommit,
-} from "./git-tree.shared.ts";
+} from "./git-tree.ts";
 
 // --- Seeded PRNG (mulberry32) -------------------------------------------------
 

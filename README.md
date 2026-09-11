@@ -39,7 +39,7 @@ paseo plugin ls
 
 Requirements:
 
-- Paseo 0.7.2 or newer (local plugin support; verified against the bundled `paseo` CLI)
+- Paseo 0.8.0 or newer (runtime plugin entries; verified against the bundled `paseo` CLI)
 - `pluginsEnabled: true` in the daemon's `config.json` (Settings → Plugins in the desktop app)
 
 ## Usage
@@ -109,16 +109,20 @@ Right-click a file for **Filter commits by this file** (fills in `f: <path>`) or
 ```
 paseo-git-tree/
 ├── paseo-plugin.json        # Manifest (id: "git-tree")
-├── index.ts                 # Entry: RPC handlers + workspace panel registration
-├── git-tree-panel.client.tsx # Panel UI (React Native) — client bundle
-├── git-tree.server.ts       # git subprocess wrapper — server bundle
-├── git-tree.shared.ts       # Zod RPC contracts + pure graph/layout algorithms
-├── git-tree.shared.test.ts  # Logic tests (node:test) incl. seeded random cases
+├── index.client.tsx         # Client entry: workspace panel registration
+├── index.server.ts          # Server entry: RPC handler registration
+├── client/git-tree-panel.tsx # Panel UI (React Native) — client bundle
+├── server/git-tree.ts       # git subprocess wrapper — server bundle
+├── shared/git-tree.ts       # Zod RPC contracts + pure graph/layout algorithms
+├── shared/git-tree.test.ts  # Logic tests (node:test) incl. seeded random cases
 ├── package.json
 ├── tsconfig.json
 ├── LICENSE
 └── README.md / README.zh-CN.md
 ```
+
+`client/`, `server/`, and `shared/` are compiler boundaries in Paseo 0.8: the client
+bundle compiles only `client/` + `shared/`, the server bundle only `server/` + `shared/`.
 
 ## Testing
 

@@ -12,5 +12,5 @@
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["*.ts", "*.tsx"]
+  "include": ["*.ts", "*.tsx", "client/**/*.ts", "client/**/*.tsx", "server/**/*.ts", "shared/**/*.ts"]
 }

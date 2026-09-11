@@ -1,5 +1,5 @@
-import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin";
-import { Icon, useToast } from "@getpaseo/plugin/react-native";
+import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
@@ -31,7 +31,7 @@ import {
   type GitTreeRow,
   parseBranchRef,
   splitRemoteRef,
-} from "./git-tree.shared";
+} from "../shared/git-tree";
 
 // --- Geometry ---------------------------------------------------------------
 
@@ -2436,7 +2436,7 @@ const CommitRow = memo(function CommitRow({
 });
 
 // --- Windowed list -------------------------------------------------------------
-// itemOffset / indexAtY / windowRange live in git-tree.shared.ts (tested there).
+// itemOffset / indexAtY / windowRange live in shared/git-tree.ts (tested there).
 
 function VirtualCommitList({
   rows,
