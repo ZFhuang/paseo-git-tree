@@ -113,6 +113,96 @@ const FLOAT_SHADOW = {
   boxShadow: "0 8px 28px rgba(0,0,0,0.38), 0 1px 0 rgba(255,255,255,0.04)",
 } as const;
 
+/**
+ * Press feedback for the header icon buttons. `flashing` goes true on
+ * press-in and clears a beat after press-out, so even a quick click shows a
+ * blink instead of a one-frame flicker. Callers spread the accent over their
+ * own idle/hover background.
+ *
+ * Deliberately state-driven rather than `Animated`: the host supplies its own
+ * `react-native` surface, and a plain style swap needs nothing beyond the
+ * `Pressable`/`View` primitives the panel already relies on.
+ */
+function usePressFlash(dwellMs = 170) {
+  const [flashing, setFlashing] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const onPressIn = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    setFlashing(true);
+  }, []);
+
+  const onPressOut = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setFlashing(false), dwellMs);
+  }, [dwellMs]);
+
+  return { flashing, onPressIn, onPressOut };
+}
+
+/**
+ * Header icon button with hover tint and a press blink. Owns its hover state
+ * so the four header buttons don't each need a `useState` in the panel.
+ */
+function HeaderIconButton({
+  name,
+  label,
+  onPress,
+  colors,
+  disabled,
+  active,
+  tint,
+}: {
+  name: string;
+  label: string;
+  onPress: () => void;
+  colors: { surface1: string; foreground: string; accent: string };
+  disabled?: boolean;
+  /** Persistent highlight, e.g. the search toggle while open. */
+  active?: boolean;
+  /** Icon color override; defaults to `active` ? accent : foreground. */
+  tint?: string;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const flash = usePressFlash();
+  const off = disabled === true;
+  const iconColor = flash.flashing
+    ? colors.accent
+    : tint ?? (active ? colors.accent : colors.foreground);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={off}
+      onPress={onPress}
+      onPressIn={off ? undefined : flash.onPressIn}
+      onPressOut={off ? undefined : flash.onPressOut}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      hitSlop={8}
+      style={{
+        padding: 6,
+        borderRadius: 6,
+        backgroundColor: flash.flashing
+          ? withAlpha(colors.accent, "66")
+          : hovered || active
+            ? colors.surface1
+            : "transparent",
+        opacity: off ? 0.45 : 1,
+      }}
+    >
+      <Icon name={name} size={14} color={iconColor} />
+    </Pressable>
+  );
+}
+
 async function copyToClipboard(text: string): Promise<boolean> {
   const g = globalThis as {
     navigator?: { clipboard?: { writeText: (value: string) => Promise<void> } };
@@ -2697,10 +2787,6 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [refreshKey, setRefreshKey] = useState(0);
   const [scopeMenu, setScopeMenu] = useState<{ x: number; y: number } | null>(null);
   const [scopeHover, setScopeHover] = useState(false);
-  const [refreshHover, setRefreshHover] = useState(false);
-  const [pullHover, setPullHover] = useState(false);
-  const [pushHover, setPushHover] = useState(false);
-  const [searchHover, setSearchHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
 
   const loadTree = useCallback(
@@ -3188,91 +3274,41 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             </Text>
           </Pressable>
         </View>
-        <Pressable
-          accessibilityRole="button"
+        <HeaderIconButton
+          name="Search"
+          label="Search commits"
+          active={searching}
+          colors={theme.colors}
           onPress={() => {
             setSearching((v) => !v);
             if (searching) setQuery("");
           }}
-          onHoverIn={() => setSearchHover(true)}
-          onHoverOut={() => setSearchHover(false)}
-          hitSlop={8}
-          style={{
-            padding: 6,
-            borderRadius: 6,
-            backgroundColor: searchHover || searching ? theme.colors.surface1 : "transparent",
-          }}
-        >
-          <Icon
-            name="Search"
-            size={14}
-            color={searching ? theme.colors.accent : theme.colors.foreground}
-          />
-        </Pressable>
+        />
         {currentHead && !currentHead.remote ? (
           <>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Pull"
+            <HeaderIconButton
+              name="ArrowDownToLine"
+              label="Pull"
               disabled={branchBusy}
+              colors={theme.colors}
               onPress={() => handleBranchOp({ op: "pull" })}
-              onHoverIn={() => setPullHover(true)}
-              onHoverOut={() => setPullHover(false)}
-              hitSlop={8}
-              style={{
-                padding: 6,
-                borderRadius: 6,
-                backgroundColor: pullHover ? theme.colors.surface1 : "transparent",
-                opacity: branchBusy ? 0.45 : 1,
-              }}
-            >
-              <Icon
-                name="ArrowDownToLine"
-                size={14}
-                color={theme.colors.foreground}
-              />
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Push"
+            />
+            <HeaderIconButton
+              name="ArrowUpFromLine"
+              label="Push"
               disabled={branchBusy || remotes.length === 0}
+              colors={theme.colors}
               onPress={() => handleBranchOp({ op: "push", name: currentHead.name })}
-              onHoverIn={() => setPushHover(true)}
-              onHoverOut={() => setPushHover(false)}
-              hitSlop={8}
-              style={{
-                padding: 6,
-                borderRadius: 6,
-                backgroundColor: pushHover ? theme.colors.surface1 : "transparent",
-                opacity: branchBusy || remotes.length === 0 ? 0.45 : 1,
-              }}
-            >
-              <Icon
-                name="ArrowUpFromLine"
-                size={14}
-                color={theme.colors.foreground}
-              />
-            </Pressable>
+            />
           </>
         ) : null}
-        <Pressable
-          accessibilityRole="button"
+        <HeaderIconButton
+          name="RefreshCw"
+          label="Refresh"
+          colors={theme.colors}
+          tint={loading ? theme.colors.foregroundMuted : theme.colors.foreground}
           onPress={refresh}
-          onHoverIn={() => setRefreshHover(true)}
-          onHoverOut={() => setRefreshHover(false)}
-          hitSlop={8}
-          style={{
-            padding: 6,
-            borderRadius: 6,
-            backgroundColor: refreshHover ? theme.colors.surface1 : "transparent",
-          }}
-        >
-          <Icon
-            name="RefreshCw"
-            size={14}
-            color={loading ? theme.colors.foregroundMuted : theme.colors.foreground}
-          />
-        </Pressable>
+        />
       </View>
 
       {searching ? (
