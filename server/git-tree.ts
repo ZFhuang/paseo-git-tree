@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitRepoEntry, gitRepos, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree.ts";
 
 type Input = ZodOutput<typeof gitTree.input>;
 
@@ -646,4 +647,99 @@ export async function runCommitOp(
     const message = err instanceof Error ? err.message : String(err);
     return { error: firstLine(message) || message };
   }
+}
+
+// --- Repository discovery for multi-repo workspaces -------------------------
+
+/** Directories that never hold a repo we want in the picker. */
+const SKIP_REPO_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".venv",
+  "venv",
+  "dist",
+  "build",
+  ".next",
+  ".docusaurus",
+  "target",
+  "vendor",
+  "__pycache__",
+  ".cache",
+  "coverage",
+]);
+
+const MAX_REPOS = 200;
+const MAX_REPO_DEPTH = 3;
+
+async function repoRoot(directory: string): Promise<string | null> {
+  try {
+    const out = await runGit(directory, ["rev-parse", "--show-toplevel"]);
+    const root = firstLine(out).trim();
+    return root || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * List the git repositories a workspace can show.
+ *
+ * When the workspace directory is a repository, that repository is the only
+ * result. Otherwise the directory is treated as a multi-repo parent and its
+ * nested repositories are discovered (up to a depth and count cap) so the
+ * panel can offer a picker.
+ */
+export async function getGitRepos(
+  input: ZodOutput<typeof gitRepos.input>,
+): Promise<ZodOutput<typeof gitRepos.output>> {
+  const workspace = path.resolve(input.directory);
+  const found = new Map<string, ZodOutput<typeof gitRepoEntry>>();
+
+  const add = async (directory: string): Promise<boolean> => {
+    const root = await repoRoot(directory);
+    if (!root) return false;
+    const real = await fs.realpath(root).catch(() => root);
+    if (!found.has(real)) {
+      found.set(real, {
+        path: real,
+        name: path.basename(real),
+        relative: path.relative(workspace, real) || ".",
+      });
+    }
+    return true;
+  };
+
+  const sorted = () =>
+    [...found.values()].sort((a, b) => a.relative.localeCompare(b.relative));
+
+  // A repository workspace keeps its current behavior: one repo, no scan.
+  if (await add(workspace)) return { repos: sorted() };
+
+  const scan = async (directory: string, depth: number): Promise<void> => {
+    if (depth > MAX_REPO_DEPTH || found.size >= MAX_REPOS) return;
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith(".") || SKIP_REPO_DIRS.has(entry.name)) continue;
+      if (found.size >= MAX_REPOS) return;
+      const child = path.join(directory, entry.name);
+      let hasGitEntry = false;
+      try {
+        await fs.stat(path.join(child, ".git"));
+        hasGitEntry = true;
+      } catch {
+        hasGitEntry = false;
+      }
+      if (hasGitEntry && (await add(child))) continue;
+      await scan(child, depth + 1);
+    }
+  };
+
+  await scan(workspace, 1);
+  return { repos: sorted() };
 }

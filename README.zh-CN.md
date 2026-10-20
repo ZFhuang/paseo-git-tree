@@ -11,6 +11,7 @@
 | 功能 | 说明 |
 |------|------|
 | **面板标签页** | 分支树作为一个面板 tab(也可放在 explorer 侧边栏窗格里)。 |
+| **仓库选择器** | 在多仓库工作区(包含多个 checkout 的普通目录)中选择图表显示的仓库;工作区本身是单个仓库时隐藏。 |
 | **窗口化渲染** | 车道式拓扑渲染——默认 500 条提交,最多 2000 条;展开卡片时点和线位置不变。 |
 | **分支选择器** | 顶部当前分支下拉:左键预览分支历史(不 checkout),右键或 ⋯ 打开 checkout / merge / rebase / push / pull / fetch / rename / delete。 |
 | **分支芯片** | 图上的分支芯片:左键预览,右键打开与顶栏相同的分支菜单;右键 commit 可 create branch / checkout / cherry-pick / revert / merge / rebase / reset / tag。 |

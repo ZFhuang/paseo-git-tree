@@ -11,6 +11,7 @@ A [Paseo](https://paseo.sh) plugin that draws the current workspace's branch his
 | Feature | Description |
 |---------|-------------|
 | **Workspace tab** | Branch tree as a panel tab; also allowed in the explorer sidebar pane. |
+| **Repo picker** | In a multi-repo workspace (a plain directory holding several checkouts), choose which nested repository the graph shows. Hidden when the workspace is a single repository. |
 | **Windowed graph** | Lane-based topology rendering — 500 commits by default, up to 2000 — with dot and line positions that stay put when a card expands. |
 | **Branch picker** | Current-branch dropdown in the header: left-click to preview a branch's history (no checkout), right-click or ⋯ for checkout / merge / rebase / push / pull / fetch / rename / delete. |
 | **Branch chips** | On-graph branch chips: left-click previews, right-click opens the same branch menu as the header. Right-click a commit for create branch / checkout / cherry-pick / revert / merge / rebase / reset / tag. |

@@ -10,6 +10,7 @@ import {
   computeGraph,
   gitBranchOp,
   gitCommitOp,
+  gitRepos,
   gitTree,
   graphColor,
   assignRefColors,
@@ -27,6 +28,7 @@ import {
   type CommitDiffOutput,
   type GitBranchOp,
   type GitCommitOp,
+  type GitRepoEntry,
   type GitTreeOutput,
   type GitTreeRow,
   parseBranchRef,
@@ -964,6 +966,57 @@ function ScopeMenu({
             hint={opt.hint}
             colors={colors}
             onPress={() => onSelect(opt.value)}
+          />
+        ))}
+      </View>
+    </>
+  );
+}
+
+function RepoMenu({
+  x,
+  y,
+  repos,
+  selected,
+  colors,
+  onSelect,
+  onDismiss,
+}: {
+  x: number;
+  y: number;
+  repos: GitRepoEntry[];
+  selected: string | null;
+  colors: FloatColors;
+  onSelect: (path: string) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <>
+      <MenuScrim onDismiss={onDismiss} />
+      <View
+        {...hostMenuBlock}
+        style={{
+          position: "absolute",
+          left: x,
+          top: y,
+          minWidth: 240,
+          maxWidth: 360,
+          zIndex: 42,
+          backgroundColor: colors.surface,
+          borderRadius: CARD_RADIUS,
+          borderWidth: 1,
+          borderColor: colors.ring,
+          paddingVertical: 4,
+          ...FLOAT_SHADOW,
+        }}
+      >
+        {repos.map((repo) => (
+          <MenuItem
+            key={repo.path}
+            label={repo.path === selected ? `✓  ${repo.name}` : repo.name}
+            hint={repo.relative}
+            colors={colors}
+            onPress={() => onSelect(repo.path)}
           />
         ))}
       </View>
@@ -2744,14 +2797,22 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     projectKind: w.projectKind,
   }));
   const getTree = useRpc(gitTree);
+  const getRepos = useRpc(gitRepos);
   const runBranch = useRpc(gitBranchOp);
   const runCommit = useRpc(gitCommitOp);
   const toast = useToast();
   const shellRef = useRef<View>(null);
   const branchTriggerRef = useRef<View>(null);
   const scopeTriggerRef = useRef<View>(null);
+  const repoTriggerRef = useRef<View>(null);
 
-  const directory = workspace?.directory ?? null;
+  const workspaceDirectory = workspace?.directory ?? null;
+  const [repos, setRepos] = useState<GitRepoEntry[]>([]);
+  const [reposLoaded, setReposLoaded] = useState(false);
+  const [repoPath, setRepoPath] = useState<string | null>(null);
+  const directory = repoPath ?? workspaceDirectory;
+  const [repoMenu, setRepoMenu] = useState<{ x: number; y: number } | null>(null);
+  const [repoHover, setRepoHover] = useState(false);
   const [data, setData] = useState<GitTreeOutput | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -2789,6 +2850,44 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [scopeHover, setScopeHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
 
+  // A workspace is either a git repository or a plain directory holding several
+  // checkouts (FLUXRIG/general, for example). Discover which before running
+  // git log, and keep the picker selection stable across refreshes.
+  useEffect(() => {
+    if (!workspaceDirectory) {
+      setRepos([]);
+      setReposLoaded(true);
+      setRepoPath(null);
+      return;
+    }
+    let alive = true;
+    setReposLoaded(false);
+    getRepos({ directory: workspaceDirectory })
+      .then(({ repos: next }) => {
+        if (!alive) return;
+        setRepos(next);
+        setRepoPath((current) => {
+          if (current && next.some((repo) => repo.path === current)) return current;
+          return (
+            next.find((repo) => repo.path === workspaceDirectory)?.path ??
+            next[0]?.path ??
+            null
+          );
+        });
+      })
+      .catch(() => {
+        if (!alive) return;
+        setRepos([]);
+        setRepoPath(null);
+      })
+      .finally(() => {
+        if (alive) setReposLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [workspaceDirectory, getRepos]);
+
   const loadTree = useCallback(
     (opts?: { sync?: boolean; preview?: string | null }) => {
       if (!directory) return;
@@ -2820,8 +2919,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   );
 
   useEffect(() => {
+    if (!reposLoaded) return;
     loadTree();
-  }, [loadTree]);
+  }, [loadTree, reposLoaded]);
 
   const refresh = useCallback(() => loadTree({ sync: true }), [loadTree]);
 
@@ -2877,6 +2977,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     setFileMenu(null);
     setBranchMenu(null);
     setScopeMenu(null);
+    setRepoMenu(null);
   }, []);
 
   const handleOpenMenu = useCallback(
@@ -2905,10 +3006,10 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
 
   const handleShowTip = useCallback(
     (row: GitTreeRow, pageX: number, pageY: number) => {
-      if (menuOpen.current || branchMenu || scopeMenu || fileMenu) return;
+      if (menuOpen.current || branchMenu || scopeMenu || fileMenu || repoMenu) return;
       placeAt(pageX, pageY, 308, 88, (x, y) => setTip({ x, y, row }));
     },
-    [placeAt, branchMenu, scopeMenu, fileMenu],
+    [placeAt, branchMenu, scopeMenu, fileMenu, repoMenu],
   );
 
   const handleHideTip = useCallback(() => setTip(null), []);
@@ -2949,6 +3050,30 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       placeAt(x, y + h + 6, 220, 180, (lx, ly) => setScopeMenu({ x: lx, y: ly }));
     });
   }, [scopeMenu, placeAt]);
+
+  const openRepoMenu = useCallback(() => {
+    if (repoMenu) {
+      setRepoMenu(null);
+      return;
+    }
+    menuOpen.current = false;
+    setMenu(null);
+    setTip(null);
+    setBranchMenu(null);
+    setScopeMenu(null);
+    setFileMenu(null);
+    const node = repoTriggerRef.current;
+    const show = (x: number, y: number) => setRepoMenu({ x, y });
+    if (!node || typeof node.measureInWindow !== "function") {
+      show(8, 40);
+      return;
+    }
+    node.measureInWindow((x, y, _w, h) => {
+      placeAt(x, y + h + 6, 280, Math.min(360, 44 + repos.length * 34), (lx, ly) =>
+        show(lx, ly),
+      );
+    });
+  }, [repoMenu, placeAt, repos.length]);
 
   const handleBranchOp = useCallback(
     (req: BranchOpRequest) => {
@@ -3196,6 +3321,44 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             </Text>
           ) : null}
         </View>
+        {repos.length > 1 ? (
+          <View ref={repoTriggerRef} style={{ flexShrink: 1, minWidth: 0, marginRight: 4 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Select repository"
+              onPress={openRepoMenu}
+              onHoverIn={() => setRepoHover(true)}
+              onHoverOut={() => setRepoHover(false)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 5,
+                maxWidth: layout.compact ? 140 : 200,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 999,
+                backgroundColor:
+                  repoHover || repoMenu ? theme.colors.surface2 : theme.colors.surface1,
+                borderWidth: 1,
+                borderColor: theme.colors.border + "66",
+              }}
+            >
+              <Icon name="Folder" size={12} color={theme.colors.foregroundMuted} />
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: theme.colors.foreground,
+                  fontSize: 11,
+                  fontWeight: "600",
+                  flexShrink: 1,
+                }}
+              >
+                {repos.find((repo) => repo.path === directory)?.name ?? "repo"}
+              </Text>
+              <Icon name="ChevronDown" size={11} color={theme.colors.foregroundMuted} />
+            </Pressable>
+          </View>
+        ) : null}
         {triggerName ? (
           <View ref={branchTriggerRef} style={{ flexShrink: 1, minWidth: 0, marginRight: 4 }}>
             <Pressable
@@ -3354,7 +3517,17 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         </View>
       ) : null}
 
-      {data?.error ? (
+      {!reposLoaded ? (
+        <View style={styles.empty}>
+          <Icon name="GitBranch" size={18} color={theme.colors.foregroundMuted} />
+          <Text style={styles.emptyText}>Finding repositories…</Text>
+        </View>
+      ) : repos.length === 0 ? (
+        <View style={styles.empty}>
+          <Icon name="GitBranch" size={18} color={theme.colors.foregroundMuted} />
+          <Text style={styles.emptyText}>No git repositories found under this workspace</Text>
+        </View>
+      ) : data?.error ? (
         <View style={styles.empty}>
           <Icon name="CircleAlert" size={18} color={theme.colors.statusDanger} />
           <Text style={styles.errorText}>{data.error}</Text>
@@ -3396,7 +3569,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         />
       )}
 
-      {tip && !menu && !fileMenu && !branchMenu && !scopeMenu ? (
+      {tip && !menu && !fileMenu && !branchMenu && !scopeMenu && !repoMenu ? (
         <CommitTip x={tip.x} y={tip.y} row={tip.row} colors={floatColors} directory={directory} />
       ) : null}
       {menu ? (
@@ -3480,6 +3653,26 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             setPreviewRef(null);
             setScope(next);
             setScopeMenu(null);
+          }}
+        />
+      ) : null}
+      {repoMenu ? (
+        <RepoMenu
+          x={repoMenu.x}
+          y={repoMenu.y}
+          repos={repos}
+          selected={directory}
+          colors={floatColors}
+          onDismiss={() => setRepoMenu(null)}
+          onSelect={(path) => {
+            setRepoMenu(null);
+            setRepoPath(path);
+            previewHold.current = null;
+            setPreviewRef(null);
+            setExpandedHash(null);
+            setExpandedFile(null);
+            setCompareBase(null);
+            setCompareTarget(null);
           }}
         />
       ) : null}

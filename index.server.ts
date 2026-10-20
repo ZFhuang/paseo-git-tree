@@ -4,6 +4,7 @@ import {
   getCommitCompareDiff,
   getCommitDetail,
   getCommitDiff,
+  getGitRepos,
   getGitTree,
   runBranchOp,
   runCommitOp,
@@ -15,11 +16,13 @@ import {
   commitDiff,
   gitBranchOp,
   gitCommitOp,
+  gitRepos,
   gitTree,
 } from "./shared/git-tree";
 
 export default function contribute(server: PluginServerContext) {
   server.handle(gitTree, getGitTree);
+  server.handle(gitRepos, getGitRepos);
   server.handle(commitDetail, getCommitDetail);
   server.handle(commitDiff, getCommitDiff);
   server.handle(commitCompare, getCommitCompare);

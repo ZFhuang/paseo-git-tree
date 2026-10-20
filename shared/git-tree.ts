@@ -39,6 +39,34 @@ export const rowSchema = z.object({
 export const treeScope = z.enum(["current", "local", "all"]);
 export type TreeScope = z.output<typeof treeScope>;
 
+/**
+ * A git repository reachable from a workspace directory.
+ *
+ * A workspace whose `directory` is itself a repo yields exactly one entry.
+ * A multi-repo workspace (a plain directory holding several checkouts) yields
+ * one entry per nested repository, so the panel can offer a picker instead of
+ * failing on `git log` in a non-repo directory.
+ */
+export const gitRepoEntry = z.object({
+  /** Absolute path to the repository root. */
+  path: z.string(),
+  /** Basename of the repository root, used as the picker label. */
+  name: z.string(),
+  /** Path relative to the workspace directory; "." when the workspace is the repo. */
+  relative: z.string(),
+});
+export type GitRepoEntry = z.output<typeof gitRepoEntry>;
+
+export const gitRepos = defineRpc({
+  name: "gitrepos.list",
+  input: z.object({
+    directory: z.string().min(1),
+  }),
+  output: z.object({
+    repos: z.array(gitRepoEntry),
+  }),
+});
+
 export const gitTree = defineRpc({
   name: "gittree.get",
   input: z.object({
